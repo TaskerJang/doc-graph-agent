@@ -1,0 +1,67 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# uv
+.uv-cache/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env / secrets
+.env
+.env.local
+.env.*.local
+*.key
+*.pem
+
+# Chainlit
+.chainlit/translations/
+.files/
+
+# DB / 인덱스
+*.db
+*.sqlite
+*.sqlite3
+qdrant_storage/
+neo4j_data/
+neo4j_logs/
+
+# 평가 결과 (raw)
+eval/results/raw_*.json
+
+# 모델 캐시
+.cache/
+.huggingface/
+
+# Logs
+*.log
+logs/
+
+# OCR / 임시 파일
+ocr_cache/
+tmp/
+
+# 발표 자료 raw
+docs/showcase/raw/
