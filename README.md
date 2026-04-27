@@ -2,7 +2,7 @@
 
 # 📊 doc-graph-agent
 
-**VectorRAG 인턴 프로젝트를 GraphRAG로 재구성하며 배운 것**
+**VectorRAG 프로젝트를 GraphRAG로 재구성하며 배운 것**
 
 SEOCHO Mentoring Program 2026 Spring · 6주 개인 프로젝트
 
