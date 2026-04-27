@@ -17,7 +17,7 @@ SEOCHO Mentoring Program 2026 Spring · 6주 개인 프로젝트
 
 ## 🎯 프로젝트 정체성
 
-인턴 시절 구축한 [`doc-summary-agent`](https://github.com/TaskerJang/doc-summary-agent) (VectorRAG, BM25 + bge-m3 + RRF + Reranker)를 **SEOCHO 플랫폼의 Layer A/B/C 구조**에 맞춰 GraphRAG로 재구성한다.
+회사에서 구축한 [`doc-summary-agent`](https://github.com/TaskerJang/doc-summary-agent) (VectorRAG, BM25 + bge-m3 + RRF + Reranker)를 **SEOCHO 플랫폼의 Layer A/B/C 구조**에 맞춰 GraphRAG로 재구성한다.
 
 UI·파싱·평가 셋 등 기반 자산은 재활용하고, **Retrieval 코어와 Knowledge Graph 구축 파이프라인을 새로 설계**한다.
 
