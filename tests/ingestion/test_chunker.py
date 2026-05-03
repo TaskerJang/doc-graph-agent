@@ -19,7 +19,7 @@ import pytest
 from ingestion import chunker
 
 
-# ── 단위 테스트 ────────────────────────────────────────────
+# ── 단위 테스트 ─────────────────────────────────────────────────────
 
 
 def test_chunk_empty_input():
@@ -46,12 +46,20 @@ def test_chunk_simple_text():
 
 
 def test_chunk_with_headings():
-    """heading 기반 섹션 분리."""
+    """heading 기반 섹션 분리.
+
+    ⚠️ 함정 주의: Python의 인접 리터럴 결합과 * 연산자 우선순위 때문에
+        "# 제목\n\n" "본문 " * 10  → "# 제목\n\n본문 " * 10  으로 쇄제됨.
+        이러면 제목이 본문 안에 10번 반복되어 박혀 의도와 다르게 파싱됨.
+        명시적 변수 분리로 결합해야 안전함.
+    """
+    section1_body = "첫 섹션 본문입니다. " * 10
+    section2_body = "두 번째 본문입니다. " * 10
     text = (
         "# 첫 섹션\n\n"
-        "첫 섹션 본문입니다. " * 10 + "\n\n"
-        "# 두 번째 섹션\n\n"
-        "두 번째 본문입니다. " * 10
+        + section1_body
+        + "\n\n# 두 번째 섹션\n\n"
+        + section2_body
     )
     chunks = chunker.chunk(text)
 
@@ -62,12 +70,17 @@ def test_chunk_with_headings():
 
 
 def test_chunk_skip_section_disclaimer():
-    """면책 키워드가 있는 섹션은 제외."""
+    """면책 키워드가 있는 섹션은 제외.
+
+    주의: test_chunk_with_headings와 같은 인접 리터럴 결합 함정 회피.
+    """
+    body1 = "정상 본문입니다. " * 10
+    body2 = "compliance 면책 조항입니다. " * 10
     text = (
         "# 본문 섹션\n\n"
-        "정상 본문입니다. " * 10 + "\n\n"
-        "# Compliance 고지\n\n"
-        "compliance 면책 조항입니다. " * 10
+        + body1
+        + "\n\n# Compliance 고지\n\n"
+        + body2
     )
     chunks = chunker.chunk(text)
     sections = {c["section"] for c in chunks}
