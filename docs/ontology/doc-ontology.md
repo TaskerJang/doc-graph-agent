@@ -38,7 +38,7 @@ _SECTION_TYPE_MAP: list[tuple[frozenset[str], str]] = [
 ```
 
 **문제**:
-- 3개 카테고리뿐 — 평가 셋 41개 QA의 다양한 섹션 유형(투자의견, 사업부문별 실적, 통계 개황 등)을 못 잡음
+- 3개 카테고리뿐 — 평가 셋 40개 QA의 다양한 섹션 유형(투자의견, 사업부문별 실적, 통계 개황 등)을 못 잡음
 - `text[:100]`만 보고 분류 결정 → 도입부 키워드에 좌우됨
 - 다의성 처리 불가: "리스크 관리 전략"은 `리스크`로만 분류, `전망` 가능성 무시
 - 면책·법적 고지 등 노이즈 섹션은 별도 `SKIP_SECTION_KEYWORDS`로 처리 — 온톨로지 외부의 휴리스틱
@@ -65,7 +65,7 @@ return max(candidates)
 
 ## 2. Section 스키마 설계 결정 — 왜 옵션 C인가
 
-평가 셋 41개 QA 분석 결과, 5종 문서가 섞여 있어 단일 분류 체계로는 일관 적용이 어려움.
+평가 셋 40개 QA 분석 결과, 5종 문서가 섞여 있어 단일 분류 체계로는 일관 적용이 어려움.
 
 | 옵션 | 설명 | 장점 | 단점 |
 |---|---|---|---|
@@ -178,7 +178,7 @@ LLM 입력 단위. 기존 `chunker.py`의 700자 청크 정책 유지.
 })
 ```
 
-**근거**: 평가 셋의 미래에셋 IR 자료, 금감원 보도자료에서 표 기반 QA가 다수 (numerical 16/41). 표를 텍스트와 동일하게 처리하면 추출 정확도 떨어짐. Layer B에서 표의 셀 단위로 Metric 추출이 자연스럽도록 별도 노드.
+**근거**: 평가 셋의 미래에셋 IR 자료, 금감원 보도자료에서 표 기반 QA가 다수 (numerical 23/40). 표를 텍스트와 동일하게 처리하면 추출 정확도 떨어짐. Layer B에서 표의 셀 단위로 Metric 추출이 자연스럽도록 별도 노드.
 
 ## 4. Layer A 관계 정의
 
@@ -296,7 +296,7 @@ RETURN n
 1. `Document` 속성에 발행 기관·발행일 외에 **`analyst_name`, `analyst_contact`** 같은 표지 메타데이터 필드 추가 검토(W3)
 2. **"표지" / "Key Highlights" / "개황"** 같은 도입부 섹션이 모두 `Overview`로 통합됨 — 보편 라벨의 일반화 효과 확인
 3. **`Section` 라벨 다중성**은 평가 셋 5개 검증에서는 불필요 — 일단 single-label로 시작
-4. Metric 값 추출(numerical 16/41)은 모두 Layer B 책임으로 위임 — Layer A 책임 범위 명확화
+4. Metric 값 추출(numerical 23/40)은 모두 Layer B 책임으로 위임 — Layer A 책임 범위 명확화
 
 ## 6. 구조 다이어그램
 
@@ -329,7 +329,7 @@ graph TD
 - [ ] W3 Entity 추출(#13) 시 본 문서의 Section 라벨 8개를 LLM 분류 enum으로 입력
 - [ ] `entity-ontology.md` (Layer B) 작성 — Company, Metric, Risk, Outlook + DART XBRL 활용
 - [ ] `community-ontology.md` (Layer C) 작성 — Community, Topic + 알고리즘 선택 (W4)
-- [ ] ADR 0002 작성 — DART 차용 결정 + 옵션 C 채택 박제
+- [x] ADR 0002 작성 — DART 차용 결정 + 옵션 C 채택 박제 (PR #31에서 박제됨)
 - [ ] W3에서 Section 다중 라벨 필요성 재검토
 
 ## 8. 미결정 사항
@@ -345,7 +345,7 @@ graph TD
 
 - 결정 근거: [#9 멘토링 결정](https://github.com/TaskerJang/doc-graph-agent/issues/9#issuecomment-4363821681), [#9 평가 셋 분석](https://github.com/TaskerJang/doc-graph-agent/issues/9#issuecomment-4363833813)
 - 기존 회사 레포: [doc-summary-agent/chunker/chunker.py](https://github.com/TaskerJang/doc-summary-agent/blob/dev/chunker/chunker.py) — 한계 분석의 출발점
-- 평가 셋: [doc-summary-agent/eval/dataset/qa_pairs.json](https://github.com/TaskerJang/doc-summary-agent/blob/dev/eval/dataset/qa_pairs.json) — 41 QA, 5종 문서
+- 평가 셋: [doc-summary-agent/eval/dataset/qa_pairs.json](https://github.com/TaskerJang/doc-summary-agent/blob/dev/eval/dataset/qa_pairs.json) — 40 QA, 5종 문서
 - FIBO Foundation: https://spec.edmcouncil.org/fibo (Layer B 보편 클래스 차용 시 참조)
 - DART XBRL Taxonomy: http://xbrl.or.kr/ (Layer B Metric 표준화 시 참조)
 - 글 [GraphRAG #3] 온톨로지로 첫 KG 만들기 (5/2 발행, velog) — 본 설계의 이론적 배경
