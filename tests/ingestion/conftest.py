@@ -5,12 +5,17 @@
 환경변수 `DOC_FIXTURE_DIR`로 절대 경로를 지정해야 통합 테스트 실행됨.
 
 사용법 (Windows cmd):
-    set DOC_FIXTURE_DIR=C:\\path\\to\\doc-summary-agent\\eval\\dataset\\documents
+    set DOC_FIXTURE_DIR=C:\\path\\to\\eval\\dataset\\documents
     pytest tests/ingestion -v
 
 사용법 (Linux/macOS):
-    export DOC_FIXTURE_DIR=/path/to/doc-summary-agent/eval/dataset/documents
+    export DOC_FIXTURE_DIR=/path/to/eval/dataset/documents
     pytest tests/ingestion -v
+
+권장 경로 (디렉토리 자체는 .gitignore로 제외됨):
+    C:\\Users\\<user>\\doc-graph-agent\\eval\\dataset\\documents
+  또는 회사 레포의 원본 자산 위치:
+    C:\\Users\\<user>\\doc-summary-agent\\tests\\step1_parser\\sample_docs
 
 환경변수 없으면 fixture를 사용하는 테스트는 자동 skip된다.
 단위 테스트(test_chunker, test_adapter의 mock 입력)는 항상 실행.
@@ -23,7 +28,10 @@ from pathlib import Path
 import pytest
 
 
-# 평가 셋 8문서의 파일명 (qa_pairs.json의 doc 필드와 일치)
+# 평가 셋 8문서의 파일명 (회사 레포 로컬 자산의 실제 파일명 그대로)
+# 참고: qa_pairs.json의 "doc" 필드는 대부분 일치하나 금감원 파일은
+# qa_pairs에서 .docx로 표기되어있으나 로컬 원본은 .doc 포맷이다.
+# doc_parser.parse()가 .doc도 라우팅으로 읽어주므로 .doc 그대로 사용.
 EVAL_DOCS: list[str] = [
     "한화투자증권_두산밥캣_기업분석_리포트.pdf",
     "DS투자증권_시황분석_리포트.pdf",
@@ -32,7 +40,7 @@ EVAL_DOCS: list[str] = [
     "미래에셋증권_3분기_실적보고서.pdf",
     "미래에셋증권_4분기_실적보고서.pdf",
     "농협_2022년_9월말_기준_사업보고서.hwp",
-    "금융감독원_251125__보도자료__25_10월중_기업의_직접금융_조달실적.docx",
+    "금융감독원_251125__보도자료__25_10월중_기업의_직접금융_조달실적.doc",
 ]
 
 

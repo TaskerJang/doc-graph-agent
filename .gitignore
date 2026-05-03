@@ -51,6 +51,11 @@ neo4j_logs/
 # 평가 결과 (raw)
 eval/results/raw_*.json
 
+# 평가 셋 원본 문서 (회사 레포 자산 — git 제외)
+# 설계 의도는 ingestion/README.md 참고. DOC_FIXTURE_DIR 환경변수로
+# 테스트 시점에 경로를 주입하며, 원본 파일 자체는 레포에 commit하지 않는다.
+eval/dataset/documents/
+
 # 모델 캐시
 .cache/
 .huggingface/
@@ -61,6 +66,7 @@ logs/
 
 # OCR / 임시 파일
 ocr_cache/
+.ocr_cache/
 tmp/
 
 # 발표 자료 raw
