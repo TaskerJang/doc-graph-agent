@@ -1,0 +1,313 @@
+# Ported from doc-summary-agent/chunker/chunker.py (#11).
+# Source: TaskerJang/doc-summary-agent@dev as of 2026-05-03.
+# 변경: 없음 (원본 그대로). 회사 레포의 인제스트 결과를 동일하게 재현하기 위한
+#   의도적 복붙이며, GraphRAG vs VectorRAG 비교의 정직성을 위해 chunk 정책
+#   (size=700, overlap=200, min=50)을 회사 레포 dev와 동일하게 유지한다.
+import logging
+import re
+from collections import Counter
+from typing import Literal, TypedDict
+
+from langchain_text_splitters import MarkdownTextSplitter
+
+logger = logging.getLogger(__name__)
+
+# C-01: Compliance/면책 고지 섹션 키워드 (N-08 이관) — 소문자로 정규화
+SKIP_SECTION_KEYWORDS: frozenset[str] = frozenset({
+    "compliance",
+    "면책",
+    "투자등급",
+    "산업 투자의견",
+    "조사분석자료",
+    "본 자료는",
+    "보도출처",
+})
+
+# C-04, C-05: chunk_size=700 / chunk_overlap=200
+# 변경 이유: chunk_size=300은 대형 문서(40k자+)에서 청크 80개+ 발생 → LLM 호출 폭발
+# 700으로 키우면 동일 문서 기준 청크 수 약 절반 감소 → 처리 속도 개선
+DEFAULT_CHUNK_SIZE = 700
+DEFAULT_CHUNK_OVERLAP = 200
+DEFAULT_MIN_CHUNK_SIZE = 50
+
+# S-01: SemanticChunker 설정
+SEMANTIC_BREAKPOINT_TYPE = "percentile"
+SEMANTIC_BREAKPOINT_THRESHOLD: float = 85.0
+
+# S-01: 한국어 금융 문서 sentence 분리 정규식
+KOREAN_SENTENCE_SPLIT_REGEX = r"(?<=[.?!。])\s+|\n{1,2}"
+
+# 표 판단 기준 비율
+TABLE_LINE_RATIO = 0.5
+
+# pymupdf4llm 출력 기준 최대 ### 까지만 섹션 경계로 인식
+_HEADING_PATTERN = re.compile(r"^(#{1,3} .+)$", re.MULTILINE)
+
+# S-02: SemanticChunker 싱글턴
+_semantic_splitter = None
+
+# ── #75 메타데이터 enrichment 상수 ──────────────────────────
+
+# M-01: 연도 추출 정규식 — 2010~2039 범위 (금융 보고서 실용 범위)
+_YEAR_PATTERN = re.compile(r"\b(20[1-3][0-9])년?\b")
+
+# M-02: 섹션 유형 키워드 매핑 (우선순위 순 — 앞쪽일수록 우선)
+_SECTION_TYPE_MAP: list[tuple[frozenset[str], str]] = [
+    (
+        frozenset(["실적", "매출", "영업이익", "순이익", "매출액", "revenue", "earnings", "profit", "손익"]),
+        "실적",
+    ),
+    (
+        frozenset(["리스크", "위험", "risk", "충당금", "부실", "손실", "불확실"]),
+        "리스크",
+    ),
+    (
+        frozenset(["전망", "outlook", "guidance", "목표", "계획", "전략", "성장", "로드맵", "방향"]),
+        "전망",
+    ),
+]
+
+# M-03: 금융 지표 키워드 집합
+_METRIC_KEYWORDS: frozenset[str] = frozenset([
+    "영업이익", "순이익", "매출", "매출액", "ROE", "ROA", "EPS", "PER", "PBR",
+    "BIS", "부채비율", "자본", "자산", "배당", "배당수익률", "EBITDA",
+    "영업현금흐름", "잉여현금흐름", "FCF", "영업이익률", "순이익률",
+    "시가총액", "주가", "EV", "ROIC", "레버리지",
+])
+
+
+class Chunk(TypedDict):
+    section: str
+    page: int | None
+    chunk_index: int
+    text: str
+    chunk_type: Literal["text", "table"]  # #59에서 추가
+    # --- #75 추가 필드 ---
+    doc_year: str | None       # "2023", "2024" 등 정규식 추출 (최빈 연도)
+    section_type: str | None   # "실적" | "리스크" | "전망" | "기타"
+    metrics: list[str]         # ["영업이익", "매출", "ROE"] 등
+
+
+# ── #75 메타데이터 추출 함수 ────────────────────────────────
+
+def _extract_doc_year(section: str, text: str) -> str | None:
+    combined = section + " " + text
+    years = _YEAR_PATTERN.findall(combined)
+    if not years:
+        return None
+    counter = Counter(years)
+    most_common_count = counter.most_common(1)[0][1]
+    candidates = [y for y, c in counter.items() if c == most_common_count]
+    return max(candidates)
+
+
+def _extract_section_type(section: str, text: str) -> str | None:
+    target = (section + " " + text[:100]).lower()
+    for keywords, label in _SECTION_TYPE_MAP:
+        if any(kw.lower() in target for kw in keywords):
+            return label
+    return None
+
+
+def _extract_metrics(text: str) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for kw in _METRIC_KEYWORDS:
+        if kw in text and kw not in seen:
+            seen.add(kw)
+            result.append(kw)
+    return result
+
+
+def _get_semantic_splitter():
+    global _semantic_splitter
+    if _semantic_splitter is not None:
+        return _semantic_splitter
+
+    try:
+        from langchain_experimental.text_splitter import SemanticChunker
+        from langchain_community.embeddings import HuggingFaceBgeEmbeddings
+
+        embeddings = HuggingFaceBgeEmbeddings(
+            model_name="BAAI/bge-m3",
+            model_kwargs={"device": "cpu"},
+            encode_kwargs={"normalize_embeddings": True},
+            query_instruction="",
+        )
+        _semantic_splitter = SemanticChunker(
+            embeddings=embeddings,
+            breakpoint_threshold_type=SEMANTIC_BREAKPOINT_TYPE,
+            breakpoint_threshold_amount=SEMANTIC_BREAKPOINT_THRESHOLD,
+            sentence_split_regex=KOREAN_SENTENCE_SPLIT_REGEX,
+        )
+        logger.info(
+            "SemanticChunker 초기화 완료 (bge-m3, %s=%.1f)",
+            SEMANTIC_BREAKPOINT_TYPE,
+            SEMANTIC_BREAKPOINT_THRESHOLD,
+        )
+    except Exception as exc:
+        logger.warning("SemanticChunker 초기화 실패 → MarkdownTextSplitter fallback: %s", exc)
+        _semantic_splitter = None
+
+    return _semantic_splitter
+
+
+def _semantic_split(text: str) -> list[str]:
+    sentences = [s for s in re.split(KOREAN_SENTENCE_SPLIT_REGEX, text) if s.strip()]
+    if len(sentences) < 3:
+        logger.debug("문장 수 부족(%d) → SemanticChunker 우회", len(sentences))
+        return []
+
+    splitter = _get_semantic_splitter()
+    if splitter is None:
+        return []
+
+    try:
+        return splitter.split_text(text)
+    except Exception as exc:
+        logger.warning("SemanticChunker 분할 실패 → fallback: %s", exc)
+        return []
+
+
+def chunk(
+    text: str,
+    chunk_size: int = DEFAULT_CHUNK_SIZE,
+    chunk_overlap: int = DEFAULT_CHUNK_OVERLAP,
+    min_chunk_size: int = DEFAULT_MIN_CHUNK_SIZE,
+) -> list[Chunk]:
+    if not text.strip():
+        logger.warning("빈 텍스트 입력 — 청크 없음")
+        return []
+
+    sections = _split_by_heading(text)
+
+    if not sections:
+        logger.debug("heading 없음 → \\n\\n 단락 기준 fallback 분리 적용")
+        sections = [("", para.strip()) for para in text.split("\n\n") if para.strip()]
+
+    md_splitter: MarkdownTextSplitter | None = None
+    chunks: list[Chunk] = []
+    seen_table_keys: set[str] = set()
+
+    for section_title, section_body in sections:
+
+        if _is_skip_section(section_title, section_body):
+            logger.debug("skip 섹션 건너뜀: %r", section_title[:30])
+            continue
+
+        full_text = f"{section_title}\n\n{section_body}".strip() if section_title else section_body
+
+        if _is_table_block(section_body):
+            _append_table_chunk(chunks, seen_table_keys, section_title, full_text, min_chunk_size)
+            continue
+
+        if len(full_text) <= chunk_size:
+            _append_chunk(chunks, section_title, full_text, min_chunk_size, chunk_type="text")
+            continue
+
+        semantic_subs = _semantic_split(full_text)
+        if semantic_subs:
+            logger.debug(
+                "SemanticChunker 분할 완료 (section=%r, %d → %d청크)",
+                section_title[:20], len(full_text), len(semantic_subs),
+            )
+            for sub in semantic_subs:
+                _append_chunk(chunks, section_title, sub, min_chunk_size, chunk_type="text")
+        else:
+            logger.debug("MarkdownTextSplitter fallback 적용 (section=%r)", section_title[:20])
+            if md_splitter is None:
+                md_splitter = MarkdownTextSplitter(
+                    chunk_size=chunk_size,
+                    chunk_overlap=chunk_overlap,
+                )
+            for sub in md_splitter.split_text(full_text):
+                _append_chunk(chunks, section_title, sub, min_chunk_size, chunk_type="text")
+
+    for i, c in enumerate(chunks):
+        c["chunk_index"] = i
+
+    return chunks
+
+
+def _split_by_heading(text: str) -> list[tuple[str, str]]:
+    matches = list(_HEADING_PATTERN.finditer(text))
+
+    if not matches:
+        return []
+
+    sections: list[tuple[str, str]] = []
+
+    if matches[0].start() > 0:
+        pre = text[:matches[0].start()].strip()
+        if pre:
+            sections.append(("", pre))
+
+    for i, match in enumerate(matches):
+        title = match.group(1).strip()
+        body_start = match.end()
+        body_end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        body = text[body_start:body_end].strip()
+        if body:
+            sections.append((title, body))
+
+    return sections
+
+
+def _is_skip_section(title: str, body: str) -> bool:
+    lines = body.splitlines()
+    first_line = lines[0] if lines else ""
+    target = (title + " " + first_line).lower()
+    return any(kw in target for kw in SKIP_SECTION_KEYWORDS)
+
+
+def _is_table_block(text: str) -> bool:
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    if not lines:
+        return False
+    table_lines = [ln for ln in lines if ln.strip().startswith("|") or ln.strip().endswith("|")]
+    return len(table_lines) / len(lines) >= TABLE_LINE_RATIO
+
+
+def _table_key(text: str) -> str:
+    lines = text.splitlines()
+    first_line = lines[0] if lines else text
+    return re.sub(r"[|\s]", "", first_line)[:60]
+
+
+def _append_table_chunk(
+    chunks: list[Chunk],
+    seen_table_keys: set[str],
+    section: str,
+    text: str,
+    min_chunk_size: int,
+) -> None:
+    key = _table_key(text)
+    if key in seen_table_keys:
+        logger.debug("중복 표 청크 건너뜀 (key=%r)", key)
+        return
+    seen_table_keys.add(key)
+    _append_chunk(chunks, section, text, min_chunk_size, chunk_type="table")
+
+
+def _append_chunk(
+    chunks: list[Chunk],
+    section: str,
+    text: str,
+    min_chunk_size: int,
+    chunk_type: Literal["text", "table"] = "text",
+) -> None:
+    stripped = text.strip()
+    if len(stripped) < min_chunk_size:
+        logger.debug("최소 크기 미달 청크 건너뜀 (section=%r, len=%d)", section, len(stripped))
+        return
+
+    chunks.append(Chunk(
+        section=section,
+        page=None,
+        chunk_index=0,
+        text=stripped,
+        chunk_type=chunk_type,
+        doc_year=_extract_doc_year(section, stripped),
+        section_type=_extract_section_type(section, stripped),
+        metrics=_extract_metrics(stripped),
+    ))
