@@ -13,7 +13,10 @@ PR #38 에서 만든 `kg/extractor.py` 의 출력 (청크별 ExtractedEntity 리
   다른 그룹 (false merge 방지).
 - **Threshold 보수적**: 0.92 는 회사 레포 차용. 넓은 merge 보다 좋은 split 이
   점진적 개선에 유리 (NED 는 false merge 가 안 돌아오는 속성).
-- **대표 선정**: 그룹 내 최장 source_span 을 그룹명으로 (정보량 기준).
+- **대표 선정**: 한국어 도메인 우선 — 한글 포함 표기를 우선하고 그중 최장
+  source_span 을 그룹 대표로. 한글이 없으면 영문 최장.
+  사유: 멘토링 도메인이 한국어 금융 문서. 발표·로그에서 영문 대표보다
+  한글 대표가 가독성·신뢰성 더 높음.
 
 관련 이슈: #14 (본 작업), #13 (입력 공급 — PR #38), #15 (Neo4j 적재).
 """
@@ -44,7 +47,7 @@ DEFAULT_THRESHOLD = 0.92
 
 # 법인 접미사 — 정규화 단계에서 제거.
 _LEGAL_SUFFIX_RE = re.compile(
-    r"(㊐|\(주\)|주식회사|\(株\)|Inc\.?|Co\.?,?\s*Ltd\.?|Ltd\.?|Corp\.?|Co\.?)",
+    r"(㈜|\(주\)|주식회사|\(株\)|Inc\.?|Co\.?,?\s*Ltd\.?|Ltd\.?|Corp\.?|Co\.?)",
     re.IGNORECASE,
 )
 
@@ -54,18 +57,26 @@ _TICKER_RE = re.compile(r"\(\d{4,6}\)\s*$")
 # 공백 연속 압축.
 _WHITESPACE_RE = re.compile(r"\s+")
 
+# 한글 포함 여부 판정 (가-힣 한 글자라도 있으면 True).
+_HANGUL_RE = re.compile(r"[가-힣]")
+
+
+def _has_hangul(text: str) -> bool:
+    """한글 음절이 하나라도 포함됐으면 True."""
+    return bool(_HANGUL_RE.search(text))
+
 
 # ── 결과 타입 ──────────────────────────────────────
 class EntityGroup(BaseModel):
     """NED 로 묶인 동일 실체 그룹.
 
     `members` 는 원본 ExtractedEntity 들 (청크 간 중복 포함). 그룹 대표는
-    `representative_name` 으로 (그룹 내 최장 source_span).
+    `representative_name` 으로 (한글 우선 + 최장 source_span).
     """
 
     group_id:            str                      = Field(..., description="전역적 식별자. 예: 'grp_001'")
     type:                EntityType
-    representative_name: str                      = Field(..., description="그룹 대표 이름 (최장 source_span)")
+    representative_name: str                      = Field(..., description="그룹 대표 이름 (한글 우선, 최장 source_span)")
     members:             list[ExtractedEntity]    = Field(default_factory=list)
 
 
@@ -90,7 +101,7 @@ def normalize_name(name: str) -> str:
     """표기 정규화.
 
     - 종목코드 괄호 제거 (예: "삼성전자(005930)" → "삼성전자")
-    - 법인 접미사 제거 (㊐, \\(주\\), Inc., Co., Ltd. 등)
+    - 법인 접미사 제거 (㈜, \\(주\\), Inc., Co., Ltd. 등)
     - 공백 압축
     - 양끝 공백 제거
 
@@ -166,8 +177,19 @@ class _GroupBuilder:
         self.embeddings.append(emb)
 
     def representative_name(self) -> str:
-        """그룹 내 가장 긴 source_span 을 대표로 (정보량 기준)."""
-        return max(self.members, key=lambda m: len(m.source_span)).canonical
+        """그룹 대표 — 한글 포함 우선, 그 다음 최장 source_span 의 canonical.
+
+        한국어 금융 도메인 특성 반영:
+        - "두산밥캣" / "Doosan Bobcat" / "두산밥캣㈜" 셋 중 한글 표기 우선
+        - 한글 포함된 후보가 여럿이면 그중 source_span 이 가장 긴 것
+        - 모두 영문이면 영문 최장 (회사명이 영문만 있는 경우 대응)
+
+        len + lexicographic 으로 안정적 정렬 — 같은 길이일 때 결정적 선택.
+        """
+        hangul_members = [m for m in self.members if _has_hangul(m.canonical)]
+        pool = hangul_members or self.members
+        chosen = max(pool, key=lambda m: (len(m.source_span), m.canonical))
+        return chosen.canonical
 
 
 def _build_groups(
