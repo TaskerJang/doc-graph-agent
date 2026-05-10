@@ -51,7 +51,12 @@ class EntityList(BaseModel):
     entities: list[Entity]
 
 
-EXTRACTION_PROMPT = f"""당신은 한국어 금융 문서에서 Entity 를 추출하는 도우미입니다.
+# 시행착오 박제 (#8):
+# - 초기 버전은 f-string + .format(text=text) 이중 처리로 KeyError: '"entities"' 발생.
+# - 원인: f"""...{{...}}...""" 가 이미 한 번 escape 되어 결과 문자열엔 단일 {} 만 남고,
+#   그 다음 .format() 이 JSON 의 {"entities"} 를 변수로 해석하면서 KeyError.
+# - 수정: f-string 제거 + JSON 예시는 {{...}} 로 두어 .format() 단일 처리에 위임.
+EXTRACTION_PROMPT = """당신은 한국어 금융 문서에서 Entity 를 추출하는 도우미입니다.
 
 아래 텍스트에서 다음 라벨에 해당하는 Entity 를 모두 추출하세요:
 - Company: 기업명
@@ -63,7 +68,7 @@ EXTRACTION_PROMPT = f"""당신은 한국어 금융 문서에서 Entity 를 추�
 {{"entities": [{{"name": "...", "label": "..."}}, ...]}}
 
 텍스트:
-{{text}}
+{text}
 """
 
 
