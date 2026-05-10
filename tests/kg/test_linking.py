@@ -38,7 +38,7 @@ def _stub_embeddings(rows: list[list[float]]) -> np.ndarray:
 
 # ── normalize_name ──────────────────────────────────────────
 def test_normalize_strips_legal_suffixes():
-    assert normalize_name("두산밥캣㊐") == "두산밥캣"
+    assert normalize_name("두산밥캣㈜") == "두산밥캣"
     assert normalize_name("두산밥캣(주)") == "두산밥캣"
     assert normalize_name("Doosan Bobcat Inc.") == "Doosan Bobcat"
     assert normalize_name("삼성전자 Co., Ltd.") == "삼성전자"
@@ -63,11 +63,17 @@ def test_link_empty_returns_empty():
 
 
 def test_link_high_similarity_same_type_grouped():
-    """동일 type · cosine >= threshold → 한 그룹."""
+    """동일 type · cosine >= threshold → 한 그룹.
+
+    한글 우선 정책 (#14 fix 6728274) 검증:
+    - e2 (Doosan Bobcat) source_span 이 13자로 최장이지만 영문이라 제외
+    - 한글 멤버 (e1, e3) 중 source_span 최장 = e3 의 'two산밥캣 주식회사' (8자)
+    - 따라서 대표 = e3 의 canonical = "두산밥캣㈜"
+    """
     ents = [
         _ent("e1", EntityType.COMPANY, "두산밥캣", "두산밥캣"),
         _ent("e2", EntityType.COMPANY, "Doosan Bobcat", "Doosan Bobcat"),
-        _ent("e3", EntityType.COMPANY, "두산밥캣㊐", "두산밥캣 주식회사"),
+        _ent("e3", EntityType.COMPANY, "두산밥캣㈜", "두산밥캣 주식회사"),
     ]
     # 3개 모두 유사도 0.95 (threshold 0.92 초과)
     embs = _stub_embeddings([
@@ -83,8 +89,31 @@ def test_link_high_similarity_same_type_grouped():
     g = result.groups[0]
     assert g.type == EntityType.COMPANY
     assert len(g.members) == 3
-    # 대표는 제일 긴 source_span 에서의 canonical → e3 의 canonical (㊐ 포함)
-    assert g.representative_name == "두산밥캣㊐"
+    # 한글 우선 정책으로 e3 의 canonical 이 대표
+    assert g.representative_name == "두산밥캣㈜"
+
+
+def test_link_all_english_falls_back_to_longest():
+    """그룹 멤버 전원이 영문이면 영문 최장으로 fallback.
+
+    외국 회사 (예: Apple, Apple Inc., AAPL) 케이스 대응.
+    """
+    ents = [
+        _ent("e1", EntityType.COMPANY, "Apple", "Apple"),
+        _ent("e2", EntityType.COMPANY, "Apple Inc.", "Apple Inc."),
+        _ent("e3", EntityType.COMPANY, "AAPL", "AAPL"),
+    ]
+    embs = _stub_embeddings([
+        [1.0, 0.0],
+        [0.97, 0.03],
+        [0.95, 0.05],
+    ])
+
+    result = link_entities(ents, embeddings=embs, threshold=DEFAULT_THRESHOLD)
+
+    assert result.grouped_count == 1
+    # 한글 멤버 없음 → source_span 최장 = "Apple Inc." (10자)
+    assert result.groups[0].representative_name == "Apple Inc."
 
 
 def test_link_low_similarity_split():
