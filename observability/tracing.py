@@ -9,14 +9,23 @@
 2. **하나라도 비어 있으면 graceful no-op** — 데코레이터가 원본 함수를 그대로
    반환. 테스트 환경 / CI / 신규 컨트리뷰터의 로컬 환경 보호.
 
-3. **lazy init** — 모듈 import 시점에 환경 체크. `opik` 자체 import 는 활성
-   상태일 때만 시도 — opik 패키지가 없거나 망가졌어도 본 모듈 import 가
-   레포 전체를 깨트리지 않도록.
+3. **lazy init + .env 자동 로드** — `is_active()` 첫 호출 시점에 `.env` 를
+   읽어 환경변수에 채워 넣는다 (이미 설정된 값은 덮지 않음). 호출 스크립트가
+   `load_dotenv()` 를 깜빡해도 tracer 가 자기 책임으로 환경을 확보.
 
-설계 사유 (이슈 #24 본문):
+4. **opik 자체 import 도 지연** — 활성 상태일 때만 시도 → opik 패키지가
+   없거나 망가졌어도 본 모듈 import 가 레포 전체를 깨트리지 않도록.
+
+설계 사유 (이슈 #24 본문 + 5/16 sanity run 시행착오):
 - Opik 의 raw `@track` 은 환경변수가 없어도 함수는 동작하지만 매 호출마다
   stderr 에 "API key must be specified" 경고를 뱉어 테스트 출력이 시끄러워짐.
 - pytest 가 stderr 도 캡처하는 환경에서 운영 정보 노이즈 → 본 wrapper 로 격리.
+
+5/16 sanity run 박제:
+- `scripts/run_w3_pipeline.py` 가 `load_dotenv()` 를 호출 안 해서 tracer 가
+  no-op 모드로 떨어짐. Neo4j / Kimi 는 각 모듈이 자체 로드하므로 동작했지만
+  Opik 만 trace 가 안 떠 "왜 안 되지" 디버깅. 본 모듈이 `.env` 를 자기
+  책임으로 로드하면 호출 스크립트가 깜빡해도 안전.
 
 관련 이슈: #24 (본 작업), #6 (Opik 계정).
 관련 모듈: `observability/README.md` 의 모듈 명세 (`tracing.py`).
@@ -43,6 +52,29 @@ _REQUIRED_ENV_VARS = (
 # `OPIK_URL_OVERRIDE` 는 self-hosted 시에만 필요 — required 에서 제외.
 
 
+# ── .env 자동 로드 (idempotent) ──────────────────────────────
+_dotenv_loaded: bool = False
+
+
+def _ensure_dotenv_loaded() -> None:
+    """`.env` 를 한 번만 로드. python-dotenv 가 없으면 graceful skip.
+
+    `load_dotenv()` 의 기본 동작 (override=False) 을 따라 이미 set 된 환경
+    변수는 덮지 않음 — 운영 환경에서 시스템 env 가 .env 보다 우선.
+    """
+    global _dotenv_loaded
+    if _dotenv_loaded:
+        return
+    try:
+        from dotenv import load_dotenv  # local import — 선택적 의존성
+        load_dotenv()
+        _dotenv_loaded = True
+    except ImportError:
+        # python-dotenv 미설치 — 운영자가 시스템 env 로 직접 설정한 환경에서는
+        # 정상. dotenv 없이도 본 wrapper 의 활성/비활성 판정은 동작.
+        _dotenv_loaded = True  # 재시도 방지
+
+
 # ── 활성 상태 판정 (lazy + 캐시) ────────────────────────────
 _active: bool | None = None
 
@@ -50,11 +82,12 @@ _active: bool | None = None
 def is_active() -> bool:
     """Opik 트레이싱이 활성 상태인지 (필수 env 모두 set & 비어있지 않음).
 
-    첫 호출 시 환경변수를 한 번 읽고 그 결과를 캐시. 테스트에서 환경변수를
-    바꾼 뒤 재평가하고 싶으면 `reset_cache()` 호출.
+    첫 호출 시 `.env` 로드 후 환경변수를 한 번 읽고 그 결과를 캐시. 테스트
+    에서 환경변수를 바꾼 뒤 재평가하고 싶으면 `reset_cache()` 호출.
     """
     global _active
     if _active is None:
+        _ensure_dotenv_loaded()
         _active = all(os.environ.get(k, "").strip() for k in _REQUIRED_ENV_VARS)
         if _active:
             logger.info(
@@ -72,9 +105,10 @@ def is_active() -> bool:
 
 
 def reset_cache() -> None:
-    """is_active() 캐시 초기화. 테스트에서 env 변경 후 재평가용."""
-    global _active
+    """is_active() + .env 로드 캐시 초기화. 테스트에서 env 변경 후 재평가용."""
+    global _active, _dotenv_loaded
     _active = None
+    _dotenv_loaded = False
 
 
 # ── 데코레이터 ───────────────────────────────────────────────
