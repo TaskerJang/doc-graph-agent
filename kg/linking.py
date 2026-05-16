@@ -18,7 +18,12 @@ PR #38 에서 만든 `kg/extractor.py` 의 출력 (청크별 ExtractedEntity 리
   사유: 멘토링 도메인이 한국어 금융 문서. 발표·로그에서 영문 대표보다
   한글 대표가 가독성·신뢰성 더 높음.
 
-관련 이슈: #14 (본 작업), #13 (입력 공급 — PR #38), #15 (Neo4j 적재).
+#24 (Opik 트레이싱):
+- 공개 진입점 `link_entities` 에 `@track` — span 입출력은 raw_count·그룹 수.
+- normalize / embed / group 의 세부 함수는 부착 안 함 — span 폭증 방지.
+
+관련 이슈: #14 (본 작업), #13 (입력 공급 — PR #38), #15 (Neo4j 적재),
+          #24 (Opik 트레이싱).
 """
 
 from __future__ import annotations
@@ -34,6 +39,7 @@ import numpy as np
 from pydantic import BaseModel, Field
 
 from kg.ontology import EntityType, ExtractedEntity
+from observability.tracing import track
 
 logger = logging.getLogger(__name__)
 
@@ -218,6 +224,7 @@ def _build_groups(
 
 
 # ── 공개 인터페이스 ─────────────────────────────────────
+@track
 def link_entities(
     entities: Iterable[ExtractedEntity],
     *,
@@ -240,6 +247,10 @@ def link_entities(
 
     Returns:
         LinkingResult — 그룹 리스트 + 통계.
+
+    #24 Opik:
+    - 본 함수에 `@track` — span 입출력은 raw_count·그룹 수·threshold.
+    - 환경 미설정 시 자동 no-op.
     """
     ents = list(entities)
     if not ents:
