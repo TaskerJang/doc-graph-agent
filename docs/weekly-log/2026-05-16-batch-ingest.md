@@ -1,70 +1,51 @@
 # 2026-05-16 — W3 batch ingest (#17)
 
-> Status: **5/16 코드 + 단위 테스트 + 진단 100% 완료. 옵션 B fix 한 줄 + 8문서 sanity 만 5/17(일) 으로 이월.**
+> Status: **코드 100% 완료 (chunker fix 포함), 8문서 sanity 만 5/17(일) 으로 이월.**
+> 발표 메시지 확정: **선택지 3 — 디버깅 자체를 trade-off 인사이트로**
 
 ## 🎯 5/17(일) 즉시 시작 가이드 (최상단 — 컨텍스트 복구 0초)
 
-### 진짜 hang 원인 — 100% 확정
+### Step 1 — git pull + .env 갱신 (1분)
 
-**LangChain `SemanticChunker` + bge-m3 + CPU = 본질적으로 너무 느림.**
-
-벤치마크 (5/16 단독 측정):
-| 입력 | 시간 |
-|---|---|
-| bge-m3 50문장 batch=32 | 5.4초 (OK) |
-| **SemanticChunker `split_text(820자)`** | **31.3초 (비현실적)** |
-
-추정:
-- 4464자 DS투자증권 PDF 1쪽 → 약 3분
-- 8문서 전체 → **40분~1시간** (적재 안 하고 분할만)
-
-→ SemanticChunker 는 문장을 batch 안 쓰고 sequential 임베딩 호출. CPU 환경에서 못 씀. **OpenAI API embedding 같은 빠른 임베딩 짝궁용**.
-
-### Fix — 옵션 B 한 줄 (5분 작업)
-
-**Step 1**: `ingestion/chunker.py` 의 `_semantic_split()` 함수 맨 위에 추가
-
-```python
-import os
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-
-def _semantic_split(text: str) -> list[str]:
-    # 5/16 발견: SemanticChunker+bge-m3+CPU = 820자/31초 (비현실적, 발표 못 씀)
-    # 옵션 B: 환경변수로 단순 분할 fallback. semantic 분할은 발표 후 GPU/API 마련 후
-    if os.getenv("USE_SIMPLE_CHUNKER") == "1":
-        splitter = RecursiveCharacterTextSplitter(
-            chunk_size=DEFAULT_CHUNK_SIZE,
-            chunk_overlap=DEFAULT_CHUNK_OVERLAP,
-            separators=["\n\n", "\n", ". ", "。", "? ", "! ", " ", ""],
-        )
-        return splitter.split_text(text)
-
-    # ── 기존 코드 (변경 없음) ──
-    sentences = [s for s in re.split(KOREAN_SENTENCE_SPLIT_REGEX, text) if s.strip()]
-    # ...
+```cmd
+cd C:\Users\taske\doc-graph-agent
+git checkout feat/17-batch-ingest
+git pull origin feat/17-batch-ingest
 ```
 
-**Step 2**: `.env` 에 추가
+`.env` 에 한 줄 추가:
 ```
 USE_SIMPLE_CHUNKER=1
 ```
 
-**Step 3**: sanity
+### Step 2 — sanity (2-5분)
+
 ```cmd
-cd C:\Users\taske\doc-graph-agent
 uv run python -u -m scripts.run_w3_batch --limit 1
 ```
 
-→ **30초~2분 안에 끝남** (Kimi 추출 시간이 대부분). 분할은 즉시.
+확인 포인트:
+- 로그에 `USE_SIMPLE_CHUNKER=1 → SemanticChunker 우회, RecursiveCharacterTextSplitter 사용`
+- Layer A 적재 완료, Layer B 적재 완료, MENTIONS 적재 완료
+- Aura console 에서 노드 수 0 → N 변화
 
-**Step 4**: 잘 되면 8문서 풀 실행
+### Step 3 — 8문서 풀 실행 (10-20분)
+
 ```cmd
 uv run python -u -m scripts.run_w3_batch
 ```
 
-→ **10~20분 예상** (8문서 × Kimi 호출 + bge-m3 NED + Neo4j 적재).
+stdout 의 markdown 표 복붙 → 본 문서 "8문서 일괄 적재 결과" 섹션.
 
-### 검증 후 PR #45 머지 + 이슈 #17 close + **#18 W4 Text2Cypher**
+### Step 4 — 결과 박제 + PR 머지
+
+- Aura Cypher 쿼리 4종 실행 → 본 문서 "그래프 통계"
+- Opik UI 스크린샷 → 발표 자료 폴더
+- PR #45 머지 + 이슈 #17 close
+
+### Step 5 — #18 W4 Text2Cypher 시작
+
+Layer A 적재된 풍성한 그래프 위에서.
 
 ---
 
@@ -93,20 +74,25 @@ PR #44 (#24 Opik 1단계) 머지 직후 진행. 이미 검증된 두산밥캣 1�
 - 문서별 stat 수집 → markdown 표 stdout
 - `@track` 부착된 함수들이 Opik UI 에 자동 기록
 
+**chunker.py USE_SIMPLE_CHUNKER fallback** (commit `8f0bcb1`):
+- `ingestion/chunker.py` 의 `_semantic_split()` 에 환경변수 분기 추가
+- ON 시 `RecursiveCharacterTextSplitter` (separators 한국어 친화) 사용
+- 기본값 OFF — 회사 레포 동일 동작 유지
+- chunk 정책 (size=700, overlap=200, min=50) 은 회사 레포와 동일
+
 ## ✅ 5/16 토요일 검증 완료 사항
 
 ### 코드/테스트
 - **단위 테스트 11/11 PASS** — `tests/kg/test_builder_layer_a.py`
-  - build_layer_a (7): 노드 수치 / Document params / Section label 직렬화 / Section label None / NEXT 경계 / CONTAINS_TABLE / MERGE 기반 idempotent
-  - link_chunks_to_entities (4): 기본 / dedupe / 다중 청크 / 구식 local_id graceful drop
-- **옵션 3 prefix 로직 검증** — `make_global_id` / `parse_global_id` round-trip + chunk_id 내부 `_` 충돌 케이스 모두 통과
+- **옵션 3 prefix 로직 검증** — round-trip + chunk_id 내부 `_` 충돌 케이스 통과
 - **PR #45 생성** — https://github.com/TaskerJang/doc-graph-agent/pull/45
+- **chunker.py fallback 추가** — commit `8f0bcb1`
 
 ### 환경
 - **새 Aura Free 인스턴스 구축** — ID `9b57188f` (기존 trial expired 후 재생성)
 - **`.env` 갱신 완료** — 새 NEO4J_URI / NEO4J_PASSWORD
 
-### 진단 (1.5시간 디버깅 결과 — 자산)
+### 진단 (1.5시간 디버깅 결과)
 
 | # | 검증 대상 | 결과 | 결론 |
 |---|---|---|---|
@@ -132,66 +118,42 @@ where python → C:\Users\taske\AppData\Local\Microsoft\WindowsApps\python.exe
 ```
 `python --version` 이 `Python ` 만 출력. **`uv run` 은 영향 없음** — 별개. 향후 PATH 정리 권장.
 
-**chunker.py `encode_kwargs` 부족** (참고)
-```python
-# 현재
-encode_kwargs={"normalize_embeddings": True},
-# 권장 (다음 PR 에서)
-encode_kwargs={"normalize_embeddings": True, "batch_size": 32, "show_progress_bar": True},
-```
-다만 이건 chunker 의 본질적 hang 과는 별개 — SemanticChunker 가 어차피 sequential 호출이라 batch_size 효과 미미.
+## 🎤 발표 메시지 확정 (5/23) — 선택지 3
 
-## 5/17(일) 풀데이 디버깅 계획 (위 최상단 가이드 + 상세)
+> **"동일 chunker 로 비교하려 했으나, CPU 환경에서 SemanticChunker 가 비현실적임을 발견. 운영 비용의 trade-off 를 정량화함."**
 
-### Step 0 — 컨텍스트 복구 (1분)
+### 검토한 세 선택지
 
-본 문서 최상단 "🎯 5/17(일) 즉시 시작 가이드" 섹션 읽기.
+| 옵션 | 비교 정직성 | 발표 시간 안전성 | 디버깅 가치 박제 | 회사 레포 건드림 |
+|---|---|---|---|---|
+| 1. 양쪽 동기화 | ◎ | △ | ◯ | ◎ |
+| 2. 원본 그대로 | ◎ | △ (1시간+) | × | × |
+| **3. 디버깅 = 메시지** ⭐ | △ (옵션 OFF 면 OK) | ◎ | ◎ | × |
 
-### Step 1 — chunker.py 옵션 B fix (5분)
+선택지 3 채택 이유:
+- **SEOCHO 멘토링 원칙 일치**: "GraphRAG는 도구 중 하나일 뿐, 만능이 아님 — 유용한 부분을 발견하는 것이 핵심" (Week 1 Session 2 Financial Expert)
+- **엔지니어링 사고력 증거**: 단순 성능 비교 → trade-off 분석 → production 적용 가능성 판단
+- **발표 시간 안전**: fallback 으로 8문서 적재 10-20분 → 발표 시드 확보
 
-`ingestion/chunker.py` 의 `_semantic_split()` 함수에 환경변수 분기 추가:
+### 발표 구조 (6슬라이드)
 
-```python
-def _semantic_split(text: str) -> list[str]:
-    if os.getenv("USE_SIMPLE_CHUNKER") == "1":
-        from langchain_text_splitters import RecursiveCharacterTextSplitter
-        splitter = RecursiveCharacterTextSplitter(
-            chunk_size=DEFAULT_CHUNK_SIZE,
-            chunk_overlap=DEFAULT_CHUNK_OVERLAP,
-            separators=["\n\n", "\n", ". ", "。", "? ", "! ", " ", ""],
-        )
-        return splitter.split_text(text)
-    # ... (기존 코드)
-```
+1. **문제 정의**: 회사 레포 (VectorRAG, SemanticChunker) vs doc-graph-agent (GraphRAG) 동일 환경 비교 시도
+2. **발견**: SemanticChunker + bge-m3 + CPU = 820자 / 31.3초 (단독 벤치 결과)
+3. **분석**: LangChain SemanticChunker 가 임베딩을 sequential 호출 (batch 미사용)
+4. **trade-off 표**: semantic 분할 품질 vs production 비용 (8문서 1시간+ vs 20분)
+5. **결정 + fallback 구현**: USE_SIMPLE_CHUNKER 환경변수, chunk 정책은 동일 유지
+6. **인사이트**: "RAG 비교 실험은 동일 chunker 가 전제. CPU 한계가 메타-비교 차원 변수"
 
-`.env` 에 `USE_SIMPLE_CHUNKER=1` 추가.
+### "그래서 결국 성능 비교는?" 질문 대응
 
-### Step 2 — sanity (2-5분)
+답변 준비:
+- "SemanticChunker 원본은 production 환경(GPU/API) 마련 후 별도 시도 예정"
+- "fallback 으로도 **chunk 정책(size, overlap, min)** 은 동일하게 통제했고, **Layer 구조의 효과** 는 entity 그룹화율 / NED compression ratio / 그래프 시각화로 측정"
+- "오히려 이 발견 자체가 production 환경에서 어떤 도구가 적용 가능한지의 실용적 정보"
 
-```cmd
-uv run python -u -m scripts.run_w3_batch --limit 1
-```
+## 5/17(일) 풀데이 작업 계획
 
-### Step 3 — 8문서 풀 실행 (10-20분)
-
-```cmd
-uv run python -u -m scripts.run_w3_batch
-```
-
-### Step 4 — 결과 박제
-
-- stdout 의 markdown 표 → 본 문서 "8문서 일괄 적재 결과" 섹션
-- Aura console 에서 Cypher 통계 → 본 문서 "그래프 통계" 섹션
-- Opik UI 의 trace 스크린샷 → 발표 자료
-- 시행착오 (HWP/DOC/큰 PDF 발견되는 것) → 본 문서 "시행착오 박제" 섹션
-
-### Step 5 — PR #45 머지 + 이슈 #17 close
-
-GitHub 웹에서 PR #45 Merge → 이슈 #17 close.
-
-### Step 6 — #18 W4 Text2Cypher 시작
-
-Layer A 적재된 풍성한 그래프 위에서.
+위 "🎯 5/17(일) 즉시 시작 가이드" 의 Step 1~5 그대로.
 
 ## 8문서 일괄 적재 결과
 
@@ -203,11 +165,12 @@ TODO: cmd 에서 uv run python -u -m scripts.run_w3_batch 실행 후 stdout 의 
 
 ## 시행착오 박제
 
-5/16 토요일 디버깅 자산 (=발표 슬라이드 시드):
+5/16 토요일 디버깅 자산 (= 발표 슬라이드 시드):
 - ✅ **bge-m3 정상** (5.4초/50문장 = 108ms/문장)
 - ✅ **PDF / OCR / Neo4j / SemanticChunker 초기화 모두 정상**
 - ❌ **SemanticChunker.split_text 본질적 비효율** — 820자/31초, CPU 환경 비현실적
-- ✅ **해결책 확정**: 옵션 B (RecursiveCharacterTextSplitter fallback)
+- ✅ **해결책 확정**: 옵션 B (RecursiveCharacterTextSplitter fallback, commit `8f0bcb1`)
+- ✅ **발표 메시지 확정**: 선택지 3 (디버깅 = trade-off 인사이트)
 - **Aura Free trial** — 새 인스턴스 `9b57188f` 로 우회
 - **MS Store python stub** — `uv run` 영향 없음
 
@@ -266,8 +229,9 @@ RETURN DISTINCT d.filename;
 | 포맷 다양성 (PDF/DOC/HWP) → 통합 그래프 | 본 문서 + 그래프 캡처 |
 | `@track` 으로 자동 수집된 8문서 trace | Opik UI |
 | 미래에셋 4분기 NED 효과 — 청크 간 같은 entity 그룹화 | linking.compression_ratio |
-| **시행착오: SemanticChunker+bge-m3+CPU 본질적 비효율 (820자/31초)** | 본 문서 |
-| **trade-off: semantic 분할 vs 단순 분할 — 발표용은 후자 우선** | 본 문서 |
+| **🎯 SemanticChunker+bge-m3+CPU 본질적 비효율 (820자/31초)** | 본 문서 진단 표 |
+| **🎯 trade-off 표: semantic 분할 vs 단순 분할** | 본 문서 |
+| **🎯 USE_SIMPLE_CHUNKER fallback 코드 + 정직성 원칙** | commit `8f0bcb1` |
 
 ## 관련
 
