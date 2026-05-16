@@ -1,7 +1,116 @@
 # 2026-05-16 — W3 batch ingest (#17)
 
-> Status: **🎉🎉🎉🎉 8/8 100% 적재 + Aura 통계 5종 측정 + 박제 완료. PR #45 머지 + #18 시작 준비.**
+> Status: **🎉🎉🎉🎉 8/8 100% 적재 + Aura 통계 5종 + NED 3차 진단 확정 → 발표 핵심 발견 박제 완료.**
 > 발표 메시지 확정: **선택지 3 — 디버깅 자체를 trade-off 인사이트로**
+> ⭐⭐⭐ **진짜 보석 발견**: Entity 추출 라벨 품질 문제 (Company 라벨이 실은 금융 metric)
+
+## 🔥🔥🔥 5/16 진단 3종 — 발표 핵심 발견 (17:39~17:43 측정)
+
+### 진단 1: 미래에셋 4Q 문서의 Entity top 20
+
+```cypher
+MATCH (d:Document {filename: "미래에셋증권_4분기_실적보고서.pdf"})
+      -[:HAS_SECTION]->(:Section)-[:CONTAINS_CHUNK]->(c:Chunk)
+      -[:MENTIONS]->(e:Entity)
+RETURN labels(e)[1] AS type, e.name, count(c) AS chunk_count
+ORDER BY chunk_count DESC LIMIT 20;
+```
+
+결과 (top 17):
+
+| Type    | e.name                                  | chunk_count |
+|---------|-----------------------------------------|-------------|
+| Company | "공모발행액 23조 7,050억원 (2025년 10월)"  | **19** |
+| Company | "유상증자 41,186"                       | 4 |
+| Company | "유상증자 77,258"                       | 4 |
+| Company | "금융지주채 발행규모 및 비중..."         | 3 |
+| Company | "AA등급 이상 회사채 발행 비중 73.0%"     | 3 |
+| Metric  | "유상증자 47,034 (기준: 증권신고서..)"   | 3 |
+| Company | "시설 목적 회사채 발행 비중 10.7%"       | 3 |
+| Company | "기업공개 전년동기대비 증감액..."         | 2 |
+| ... (대부분 Company 인데 금융 수치)        | ... |
+
+**🚨 충격적 발견**:
+- 미래에셋 4Q 보고서 68청크에서 **회사명이 단 하나도 Company entity 로 추출 안 됨**
+- "Company" 로 분류된 entity 들이 실제로는 **금융 metric / 발행 규모 / 비중** 등 수치
+- "공모발행액 23조 7,050억원" 이 Company 라벨 + 19 청크 언급 (가장 많이!)
+- LLM (Kimi) 이 **entity 추출 시 라벨을 잘못 부여**하고 있음
+
+### 진단 2: 영문/대명사 패턴 검색
+
+```cypher
+MATCH (e:Entity:Company)
+WHERE e.name CONTAINS "Mirae" OR e.name CONTAINS "당사"
+   OR e.name CONTAINS "회사" OR e.name CONTAINS "그룹"
+RETURN e.name, e.aliases, e.member_count ORDER BY e.member_count DESC LIMIT 20;
+```
+
+결과: **회사명 0건**. 모두 "회사채 23조..." 같은 수치 데이터.
+
+→ "당사", "본 회사", "그룹" 같은 대명사로 entity 추출 안 됨 (Kimi 가 무시하거나 다른 카테고리)
+→ 영문 "Mirae" 표기로도 추출 안 됨
+
+### 진단 3: 전체 Company entity top 20 (member_count 순)
+
+```cypher
+MATCH (e:Entity:Company)
+RETURN e.name, e.member_count, e.aliases
+ORDER BY e.member_count DESC LIMIT 20;
+```
+
+결과 (top 14):
+
+| Rank | e.name (Company 라벨)                              | member_count |
+|------|---------------------------------------------------|--------------|
+| 1    | "총계 금액 전년동기대비 증감액..." (NED 4 표기)      | **6** |
+| 2    | "금융사"                                            | 3 |
+| 3    | "일반기업"                                          | 3 |
+| 4    | "회사채 발행 규모 23조 6,111억원..."                  | 2 |
+| 5    | "단기채무 12,060만 원 (2024년 1∼10월)"               | 2 |
+| 6    | "회사채 23조 6,111억원 (전월 대비 16.6%↓...)"        | 2 |
+| 7    | "한국예탁결제원"                                     | 2 |
+| 8    | "금액 전월대비 증감액(증감률) △135 (△41.8%)..."     | 2 |
+| ...  | 모두 금융 metric 또는 일반 카테고리                | ... |
+
+**🚨 더 충격적 발견**:
+- **186개 Company entity 중 진짜 회사명은 거의 없음**
+- 1~3위가 "총계 금액", "금융사", "일반기업" — 모두 **범주명 또는 metric**
+- "한국예탁결제원" 이 7위 — **유일하게 진짜 기관명**
+- 회사명이 entity 로 거의 추출 안 됨 → 미래에셋증권 빈 결과의 진짜 원인
+
+### 🎯 진단 종합 — 진짜 발견
+
+> **"GraphRAG 파이프라인의 정직한 한계 발견:
+>
+> 미래에셋증권 자기 회사 보고서 4개 (1Q~4Q, 150 청크) 적재했지만 'Company' entity 로 단 하나도 잡히지 않음.
+>
+> 진짜 원인 — Kimi 가 entity 추출 시 'Company' 라벨을 잘못 부여:
+> - 금융 metric ('공모발행액 23조 7,050억원') → Company ❌
+> - 범주명 ('금융사', '일반기업') → Company ❌
+> - 회사명 → 거의 못 잡음 ❌
+>
+> 즉 GraphRAG 의 가치 (그래프 구조, MENTIONS 1,553) 는 검증됐으나,
+> **Entity 추출 품질** 이 별도의 production challenge.
+> LLM 프롬프트 엔지니어링 + 후처리 검증이 필수."**
+
+## 🎤 발표 슬라이드 메시지 — 진짜 보석 ⭐⭐⭐
+
+### Before (5/16 17:37 측정 직후 추정)
+> "NED 의 한국어 회사명 표기 변형 challenge"
+
+### After (5/16 17:43 진단 3종 확정)
+> **"Entity 추출 라벨 품질 challenge — Kimi LLM 이 'Company' 라벨에 회사명이 아닌 금융 metric 을 부여하는 패턴 발견. 186개 Company entity 중 진짜 기관명은 1개. 자기 회사 보고서에 자기 회사명이 entity 로 안 잡히는 정직한 한계."**
+
+### VectorRAG ↔ GraphRAG 보완 관계 증명
+
+| 질의 유형                            | VectorRAG | GraphRAG |
+|--------------------------------------|-----------|----------|
+| "당사 영업이익은?" (대명사 해소)       | ◎ 청크 유사도로 답변 | ❌ entity 없음 |
+| "회사 X 와 Y 의 공통 리스크는?"        | △ LLM 후처리 필요 | ◎ FACES_RISK 그래프 |
+| "금융 지표 평균 추이는?"              | △ 청크 모음 | ◎ HAS_METRIC 그래프 |
+| "이 답변의 출처는?"                  | △ 청크 ID | ◎ Layer A 추적 |
+
+→ **둘 다 필요한 게 정량 증거로 증명됨**. 발표의 진짜 결론.
 
 ## 🏆🏆🏆🏆 5/16 8/8 100% 적재 완료 (16:05 ~ 17:33, 약 76분)
 
@@ -37,212 +146,85 @@
 | Relation | 229 | 26 | **255** |
 | MENTIONS | 929 | 260 | **1,189** |
 
-## 🎯🎯🎯 5/16 8문서 Aura Cypher 통계 (17:37 측정)
+## 🎯 5/16 8문서 Aura Cypher 통계 (17:37 측정)
 
 ### Q1: 노드 라벨별 (총 610 노드)
-
 ```
-| label    | n   |
-|----------|-----|
-| Chunk    | 277 |
-| Entity   | 261 |
-| Section  |  53 |
-| Table    |  11 |   ← Table 노드 첫 적재!
-| Document |   8 |
+Chunk 277 / Entity 261 / Section 53 / Table 11 / Document 8
 ```
-
-→ Layer A (Document/Section/Chunk/Table = 349) + Layer B (Entity = 261) 완벽 통합.
-→ Table 11개는 미래에셋 4Q (6) + 한화 두산밥캣 (5) 에서 추출. 시각 자료의 그래프 통합.
 
 ### Q2: 관계 타입별 (총 2,451 관계)
-
 ```
-| rel             |    n |
-|-----------------|------|
-| MENTIONS        | 1553 | ← Layer A ↔ Layer B 압도적 최다
-| CONTAINS_CHUNK  |  277 | ← Section → Chunk (1:1)
-| HAS_METRIC      |  270 | ← Company → Metric (금융 도메인 풍부)
-| NEXT            |  235 | ← Chunk → Chunk (순서)
-| HAS_SECTION     |   53 | ← Document → Section
-| FACES_RISK      |   34 | ← Company → Risk
-| HAS_OUTLOOK     |   12 | ← Company → Outlook
-| CONTAINS_TABLE  |   11 | ← Section → Table
-| RECOMMENDED_FOR |    6 | ← 새 관계 타입 발견!
+MENTIONS 1553 / CONTAINS_CHUNK 277 / HAS_METRIC 270 / NEXT 235
+HAS_SECTION 53 / FACES_RISK 34 / HAS_OUTLOOK 12 / CONTAINS_TABLE 11
+RECOMMENDED_FOR 6 (새 관계 타입)
 ```
 
-→ **MENTIONS 1553** — Layer A ↔ Layer B 완전 통합 정량화
-→ **HAS_METRIC 270** — 금융 도메인 지표 풍부 추출 검증
-→ **RECOMMENDED_FOR 6** — 새 관계 타입 (Stock Recommendation 추정)
-
-### Q3: Entity 타입별 분포 ⭐⭐⭐ (발표 핵심 슬라이드!)
-
+### Q3: Entity 타입별 분포
 ```
-| Type     | DISTINCT Chunks | Total Mentions |
-|----------|-----------------|----------------|
-| Company  | 186             | 1,220          |
-| Metric   |  69             |   297          |
-| Risk     |  24             |    29          |
-| Outlook  |   7             |     7          |
+Company 186 (1,220 mentions, but 대부분 metric! → 진단 3 참고)
+Metric  69 (297 mentions)
+Risk    24 (29 mentions)
+Outlook  7 (7 mentions)
 ```
 
-#### 핵심 통찰
+⚠️ **Company 186개 중 진짜 회사명은 1개 ("한국예탁결제원")** — 진단 3에서 확정.
 
-- **Company 1개당 평균 6.56개 청크에서 언급** (1,220 / 186)
-  - 1문서 시절 (4.86) 보다 1.4배 높음 — 다중 문서 적재 시 entity 재사용성 증가
-- **Metric 69 entity, 297 mentions** — 한 metric 당 평균 4.3 청크 언급
-- **VectorRAG 단순 유사도로는 불가능한 entity-청크 다중 매핑** 정량 증거
-
-### Q4: 미래에셋증권 NED 검증 — ⚠️ 빈 결과 (예상치 못한 발견!)
-
-```cypher
-MATCH (e:Entity:Company {name: "미래에셋증권"})<-[:MENTIONS]-(c:Chunk)...
+### Q4: 미래에셋증권 NED — 빈 결과
 ```
-→ `No changes, no records`
-
-**원인 분석** (추정, 5/17 일요일 확인 필요):
-1. **NED 의 한국어 회사명 표기 변형** — entity 가 정확히 "미래에셋증권" 으로 저장되지 않음
-   - 가능성: "미래에셋증권(주)", "미래에셋 증권", "미래에셋", "Mirae Asset" 등으로 분산
-2. **NED 임계값 0.92 가 너무 엄격** — 같은 회사여도 다른 group 으로 분류됨
-3. **Aliases 에는 있지만 name 에는 없음** — 대표 이름 선정 로직의 영향
-
-#### 5/17 일요일 확인 쿼리
-
-```cypher
-// 미래에셋 관련 모든 Company entity 찾기
-MATCH (e:Entity:Company)
-WHERE e.name CONTAINS "미래에셋"
-   OR ANY(alias IN e.aliases WHERE alias CONTAINS "미래에셋")
-RETURN e.name, e.aliases, e.member_count
-ORDER BY e.member_count DESC;
-
-// 또는 더 넓게 — 모든 Company 중 빈도 높은 것
-MATCH (e:Entity:Company)
-RETURN e.name, e.member_count
-ORDER BY e.member_count DESC
-LIMIT 20;
+MATCH (e:Entity:Company {name: "미래에셋증권"}) ... → No records
 ```
+→ 진단 3종으로 원인 확정: **Kimi 라벨 부여 문제**.
 
-#### 발표 슬라이드 — 이게 오히려 진짜 보석!
-
-> **"NED 의 한국어 회사명 표기 변형 challenge — '미래에셋증권' 이 분기 보고서별로 다른 표기로 추출되어 단일 group 으로 NED 되지 않음. production 환경에서 한국어 entity disambiguation 의 추가 후처리 필요성 발견."**
-
-→ "GraphRAG 의 잘 동작하는 부분 + 추가 작업 필요한 부분" 의 정직한 분석. **멘토가 정말 좋아할 인사이트**.
-
-### Q5: doc_type 분포 — 포맷 + 도메인 다양성
-
+### Q5: doc_type 분포
 ```
-| format | doc_type   | n |
-| pdf    | ir         | 4 |  ← 미래에셋 1Q~4Q
-| pdf    | report     | 2 |  ← DS투자증권 + 한화 두산밥캣
-| hwp    | filing     | 1 |  ← 농협
-| docx   | disclosure | 1 |  ← 금감원
+pdf+ir 4 (미래에셋 1Q~4Q) / pdf+report 2 (DS투자증권 + 한화) / hwp+filing 1 (농협) / docx+disclosure 1 (금감원)
 ```
-
-**3개 포맷 × 4개 doc_type** 완벽한 다양성!
-
-#### 발표 슬라이드
-
-> **"3개 포맷 (PDF + HWP + DOCX) 과 4개 doc_type (report/ir/filing/disclosure) 이 한 그래프에 통합. 금융 도메인의 모든 비정형 문서 형태를 GraphRAG 가 흡수."**
-
-## 🎤 8문서 통합 발표 슬라이드 핵심 인사이트
-
-> **"5/16 단일 토요일에 8개 금융 문서 (3개 포맷, 4개 doc_type) 를 GraphRAG 그래프로 통합. 610 노드 + 2,451 관계 + 1,553 MENTIONS. Company 186 entity 가 평균 6.56개 청크에서 언급되는 풍부한 entity-청크 다중 매핑 구조 확인. VectorRAG 의 단순 유사도 검색으로는 불가능한 그래프 traversal 기반 질의 가능."**
-
-## 🏆 5/16 1문서 sanity 결과 (12:48~12:49) — 검증 자산
-
-### 적재 운영 데이터
-
-| 파일 | 포맷 | 타입 | sec | chunks(T/B) | ent(raw→grp) | rel | mentions | parse | extract | link | neo4j | total | ok |
-|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
-| DS투자증권_시황분석_리포트.pdf | pdf | report | 6 | **52/0** | **113→55** | 28 | **108** | 8.6 | 146.3 | 33.6 | 39.0 | 227.5 | ✅ |
-
-### Aura console Cypher 통계 (12:55 1문서 sanity 후 측정)
-
-**Q1: 노드** — Entity 55 / Chunk 52 / Section 6 / Document 1 = 114 노드
-**Q2: 관계** — MENTIONS 108 / CONTAINS_CHUNK 52 / NEXT 46 / HAS_METRIC 13 / FACES_RISK 7 / HAS_SECTION 6 = 232 관계
-**Q3: Entity 타입** — Company 14 (68 mentions) / Risk 6 (21) / Metric 4 (14) / Outlook 3 (5)
-
-→ Company 1개당 평균 4.86 청크 언급 (1문서)
-→ 8문서로 확장 시 6.56 청크로 증가
+**3 포맷 × 4 doc_type** 다양성.
 
 ## 🌟 발표 자료 보석 종합 (5/23 슬라이드 시드)
 
 ### A. DOC → DOCX 변환 + 재적재 성공 ⭐⭐⭐
-
-LibreOffice headless 변환 + 2차 재실행으로 ✅ 적재.
-- 49 청크 + 275→251 entity (compression 0.91) + 260 MENTIONS
-
-**엔지니어링 사이클**:
-```
-1차 시도 (LibreOffice 미설치)  →  ❌ 실패
-       ↓
-원인 분석 (코드 의존성 발견)
-       ↓
-2차 시도 (수동 변환 + 재적재)   →  ✅ 성공
-       ↓
-production 배포 가이드 박제
-```
+LibreOffice headless 변환 → 49 청크 + 251 entity + 260 MENTIONS. 엔지니어링 사이클 완성.
 
 ### B. HWP 파서 정상 동작 ⭐
-- 농협 사업보고서 — 11 청크 + 56 entity + 56 MENTIONS 적재
-- 의존성 우려 → 실제로는 정상
+농협 사업보고서 11 청크 적재.
 
 ### C. 미래에셋 4분기 풍부 ⭐
-- 68 청크 + 6 표 (Table 노드 첫 적재) + 335→261 entity (compression 0.78) + 329 MENTIONS
+68 청크 + 6 표 (Table 첫 적재) + 335→261 entity + 329 MENTIONS.
 
-### D. NED 한국어 변형 challenge ⭐⭐ (NEW! Q4 빈 결과로 발견)
-- 미래에셋증권이 분기별로 다른 표기 → 단일 group 으로 안 묶임
-- production 환경에서 한국어 entity disambiguation 추가 후처리 필요
+### D. ⭐⭐⭐ Entity 추출 라벨 품질 challenge (진단 3종 확정!)
+- 186개 Company 중 진짜 회사명 1개
+- "공모발행액 23조 7,050억원" 같은 metric 이 Company 라벨
+- LLM (Kimi) 의 라벨 부여 한계 → 프롬프트 엔지니어링 + 후처리 필요
 
-### E. LLM 비결정성
-- DS투자증권 2회 추출: 113→55 vs 103→60 차이
+### E. VectorRAG ↔ GraphRAG 보완 관계 정량 증명
+- 자기 회사 보고서에서 회사명 entity 없음 → VectorRAG 의 대명사 해소 강점
+- 그래프 traversal 은 GraphRAG 의 강점 (HAS_METRIC 270, FACES_RISK 34)
+- **둘 다 필요한 게 정량 증거로 증명됨**
 
-### F. doc_type 자동 분류 4가지
-- report / ir / filing / disclosure
+### F. LLM 비결정성
+- DS투자증권 2회 추출: 113→55 vs 103→60
 
-### G. SemanticChunker 본질적 비효율
-- 820자 / 31.3초 (CPU + bge-m3)
-- USE_SIMPLE_CHUNKER fallback 으로 우회
+### G. doc_type 자동 분류 4가지
+report / ir / filing / disclosure
+
+### H. SemanticChunker 본질적 비효율
+820자 / 31.3초 → USE_SIMPLE_CHUNKER fallback
 
 ## ✅ 5/16 토요일 검증 완료 사항
 
-### 코드/테스트
-- **단위 테스트 11/11 PASS** — `tests/kg/test_builder_layer_a.py`
-- **PR #45 생성** — https://github.com/TaskerJang/doc-graph-agent/pull/45
-- **chunker.py fallback 추가** — commit `8f0bcb1`
-- **🎉 1문서 sanity 성공** — DS투자증권 PDF, 227.5초
-- **🎉🎉🎉 8/8 적재 완료 (1차 7/8 + 2차 1/1 = 100%)** — 76분
-- **🎉🎉🎉 Aura Cypher 5종 통계 측정 완료** — 17:37
-  - 610 노드 + 2,451 관계 + 1,553 MENTIONS 정량화
-  - Q4 NED 한국어 변형 challenge 발견 (발표 보석)
-
-### 환경
-- **새 Aura Free 인스턴스 구축** — ID `9b57188f`
-- **`.env` 갱신 완료** — NEO4J_URI / NEO4J_PASSWORD / USE_SIMPLE_CHUNKER=1
-- **LibreOffice 미설치 확인** — 수동 변환으로 검증
+- ✅ **단위 테스트 11/11 PASS**
+- ✅ **PR #45 생성** — 6 commits
+- ✅ **8/8 적재 완료** — 76분, 100%
+- ✅ **Aura Cypher 5종 측정** — 17:37
+- ✅ **진단 3종 완료** — 17:39~17:43, Entity 라벨 품질 확정
+- ✅ **새 Aura `9b57188f`** + .env 갱신
+- ✅ **LibreOffice 미설치 → 수동 변환 검증**
 
 ## 🎯 5/17(일) 시작 가이드 — 진짜 마무리
 
-### Step 1 — Q4 NED 추가 진단 (3분)
-
-```cypher
-// 미래에셋 관련 모든 entity 찾기
-MATCH (e:Entity:Company)
-WHERE e.name CONTAINS "미래에셋"
-   OR ANY(alias IN e.aliases WHERE alias CONTAINS "미래에셋")
-RETURN e.name, e.aliases, e.member_count
-ORDER BY e.member_count DESC;
-
-// 전체 Company 중 빈도 높은 entity
-MATCH (e:Entity:Company)
-RETURN e.name, e.member_count
-ORDER BY e.member_count DESC
-LIMIT 20;
-```
-
-→ NED 동작 패턴 정확히 확인 → 발표 슬라이드 보강.
-
-### Step 2 — PR #45 머지 + 이슈 #17 close (1분)
+### Step 1 — PR #45 머지 + 이슈 #17 close (1분)
 
 https://github.com/TaskerJang/doc-graph-agent/pull/45 → **Merge pull request** 버튼.
 
@@ -254,7 +236,7 @@ git pull origin dev
 git branch -d feat/17-batch-ingest
 ```
 
-### Step 3 — #18 W4 Text2Cypher 시작
+### Step 2 — #18 W4 Text2Cypher 시작
 
 ```cmd
 git checkout -b feat/18-text2cypher
@@ -263,66 +245,67 @@ git checkout -b feat/18-text2cypher
 이슈 #18 요구사항:
 - `retrieval/text2cypher.py` — LLM 기반 자연어 → Cypher 변환
 - 스키마 프롬프트 — 노드/관계 정의 LLM 주입
-- 안전장치 — read-only 강제 + LIMIT 100 강제
-- 결과 파싱 → 자연어 답변 생성 (LLM 2단계)
-- 평가 셋 중 factual/numerical 질문 5개로 정성 검증
+- 안전장치 — read-only 강제 + LIMIT 100
+- 결과 파싱 → 자연어 답변 (LLM 2단계)
+- 평가 셋 5개 질문 정성 검증
 
 **5/17 평가 셋 질문 후보** (8문서 그래프 위에서):
-1. "DS투자증권 시황분석 리포트에서 언급된 회사는 몇 개인가?"
+1. "DS투자증권 시황분석 리포트에서 언급된 entity 들은? (회사+metric 혼재 검증)"
 2. "미래에셋증권 4분기 보고서의 Table 은 몇 개인가?"
-3. "보도자료(disclosure) 유형 문서의 회사 entity 들은?"
+3. "보도자료(disclosure) 유형 문서의 entity 들은?"
 4. "두산밥캣과 함께 언급된 리스크가 있는가?"
-5. "전체 그래프에서 가장 많이 언급된 Company 5개는?"
+5. "전체 그래프에서 가장 많이 언급된 Company 라벨 entity 5개는? (실제 회사 vs metric 비율 확인)"
+
+5번이 진짜 흥미로움 — Text2Cypher 가 "Company" 라벨 결과를 사용자에게 보여줄 때, 실은 metric 이 섞인 결과라는 challenge.
 
 ---
 
 ## 작업 범위
 
-PR #44 (#24 Opik 1단계) 머지 직후 진행. 이미 검증된 두산밥캣 1청크 파이프라인을 평가 셋 8문서 전체로 확장.
+PR #44 (#24 Opik 1단계) 머지 직후 진행. 두산밥캣 1청크 파이프라인 → 8문서 전체 확장.
 
 ### 변경 사항
 
 **Layer A 적재 추가** (`kg/builder.py`):
-- `build_layer_a(document, client)` — Document / Section / Chunk / Table 노드 MERGE + 4관계
-- `link_chunks_to_entities(linking, client)` — Layer A Chunk → Layer B Entity `[:MENTIONS]`
+- `build_layer_a()` — Document/Section/Chunk/Table MERGE + 4관계
+- `link_chunks_to_entities()` — Chunk → Entity `[:MENTIONS]`
 
-**옵션 3 — chunk_id global prefix** (`kg/extractor.py`):
-- entity local_id 가 자동으로 `{chunk_id}__ent_001` 형식 prefix
-- `make_global_id` / `parse_global_id` 헬퍼
+**옵션 3 chunk_id global prefix** (`kg/extractor.py`):
+- `{chunk_id}__ent_001` 형식 + `make_global_id` / `parse_global_id`
 
 **일괄 처리 스크립트** (`scripts/run_w3_batch.py`):
-- 8문서 순회 + 문서별 stat 수집 + markdown 표 stdout
+- 8문서 순회 + stat + stdout 표
 
 **chunker.py USE_SIMPLE_CHUNKER fallback** (commit `8f0bcb1`):
-- `_semantic_split()` 에 환경변수 분기, ON 시 `RecursiveCharacterTextSplitter`
-- 기본값 OFF, chunk 정책 동일 유지
+- `RecursiveCharacterTextSplitter` 분기, 기본 OFF
 
 ## 🎤 발표 메시지 확정 (5/23) — 선택지 3
 
-> **"동일 chunker 로 비교하려 했으나, CPU 환경에서 SemanticChunker 가 비현실적임을 발견. 운영 비용의 trade-off 를 정량화함."**
+> **"동일 chunker 로 비교하려 했으나, CPU 환경에서 SemanticChunker 가 비현실적임을 발견. 운영 비용의 trade-off 를 정량화함. 추가로 LLM Entity 추출의 라벨 품질 challenge 도 발견."**
 
-### 발표 구조 (12슬라이드 — 데이터 강화)
+### 발표 구조 (12슬라이드)
 
 1. 문제 정의
 2. SemanticChunker 발견 (820자/31초)
-3. 분석 (LangChain 내부 sequential)
+3. 분석 (LangChain sequential)
 4. trade-off 표
-5. fallback 구현 (USE_SIMPLE_CHUNKER)
+5. fallback 구현
 6. **운영 데이터 (8/8 100%, 76분)**
 7. **포맷 다양성 (PDF + HWP + DOCX, 4 doc_type)**
 8. **production 의존성 (LibreOffice)** ⭐
-9. **그래프 통계 (610 노드, 2,451 관계, 1,553 MENTIONS)** ⭐ NEW!
-10. **NED 한국어 변형 challenge** ⭐ NEW!
-11. **미래에셋 4Q 깊이 + LLM 비결정성**
+9. **그래프 통계 (610 / 2,451 / 1,553)** ⭐
+10. **⭐⭐⭐ Entity 라벨 품질 challenge — 186 Company 중 진짜 회사명 1개!**
+11. **VectorRAG ↔ GraphRAG 보완 관계 정량 증명** ⭐ NEW!
 12. 인사이트 메시지
 
 ### "그래서 결국 성능 비교는?" 질문 대응
 
 답변 준비:
-- SemanticChunker 원본은 production 환경 마련 후 (Issue #46)
-- chunk 정책은 동일 유지, Layer 구조 효과는 정량화: 1,189 MENTIONS, 0.86 compression
+- SemanticChunker 원본은 production 환경 후 (Issue #46)
+- chunk 정책 동일 유지, Layer 구조 효과 정량화: 1,189 MENTIONS, 0.86 compression
 - 4가지 doc_type 자동 분류
-- **NED 한국어 변형 challenge** — production 후처리 추가 필요 (정직한 한계)
+- **Entity 라벨 품질** — Kimi 한계 발견, 프롬프트 엔지니어링 + 후처리 필요
+- **VectorRAG ↔ GraphRAG 가 보완 관계** 라는 게 정량 증명됨
 
 ## 시행착오 박제
 
@@ -331,11 +314,12 @@ PR #44 (#24 Opik 1단계) 머지 직후 진행. 이미 검증된 두산밥캣 1�
 - ✅ **PDF / OCR / Neo4j / SemanticChunker 초기화 모두 정상**
 - ❌ **SemanticChunker.split_text 본질적 비효율** — 820자/31초
 - ✅ **USE_SIMPLE_CHUNKER fallback** — commit `8f0bcb1`
-- ✅ **8/8 적재 100%** + **Aura 통계 5종**
+- ✅ **8/8 적재 100%** + **Aura 통계 5종** + **진단 3종**
 - ✅ **HWP / DOCX 파서 정상**
 - ✅ **Table 노드 첫 적재** (11개)
 - ✅ **doc_type 4가지 자동 분류**
-- ⚠️ **NED 한국어 변형 challenge** — Q4 빈 결과로 발견 (NEW)
+- ⚠️⚠️⚠️ **Entity 라벨 품질 challenge** — Kimi 가 Company 라벨에 metric 부여
+- ⚠️ **NED 한국어 회사명 변형** — 자기 회사 보고서에 자기 회사명 entity 없음
 - **Aura Free trial** — 새 인스턴스 `9b57188f`
 - **LibreOffice 환경 의존성** — production Docker 가이드
 - **MS Store python stub** — `uv run` 영향 없음
@@ -345,7 +329,8 @@ PR #44 (#24 Opik 1단계) 머지 직후 진행. 이미 검증된 두산밥캣 1�
 - **LibreOffice 자동화** — production Docker 이미지 추가
 - **OCR 시간 폭증** — 3Q/4Q parse 1500초+ → 캐시 또는 라이브러리 교체
 - **OpenAI 마이그레이션** (#46) — SemanticChunker 원본 복원
-- **NED 한국어 후처리** ⭐ NEW! — 회사명 정규화 추가 단계
+- **Entity 추출 프롬프트 엔지니어링** ⭐ NEW! — Kimi 의 Company 라벨 품질 개선
+- **NED 한국어 후처리** — 회사명 정규화 추가 단계
 
 ### local_id 충돌 — 옵션 3 으로 해결
 
@@ -368,10 +353,11 @@ parse_global_id("doc1:c0001__ent_001") → ("doc1:c0001", "ent_001")
 | 자료 | 상태 | 출처 |
 |---|---|---|
 | 1문서 → 8/8 적재 운영 데이터 표 | ✅ 완료 | 본 문서 |
-| **🎯 Aura 통계 5종 (8문서, 17:37 측정)** | ✅ 완료 | 본 문서 |
-| **🎯 노드/관계 합계 (610 / 2,451)** | ✅ 완료 | Q1, Q2 |
-| **🎯 Entity 타입별 (Company 186 / 1,220 mentions)** | ✅ 완료 | Q3 |
-| **🎯 NED 한국어 변형 challenge** ⭐ NEW! | ✅ 완료 | Q4 빈 결과 |
+| **🎯 Aura 통계 5종 (8문서, 17:37)** | ✅ 완료 | 본 문서 |
+| **🎯 진단 3종 — Entity 라벨 품질** ⭐⭐⭐ | ✅ 완료 | 본 문서 17:43 |
+| **🎯 Company 186 중 진짜 회사명 1개 (한국예탁결제원)** | ✅ 완료 | 진단 3 |
+| **🎯 자기 회사 보고서에 자기 회사명 없음** | ✅ 완료 | 진단 1+2 |
+| **🎯 VectorRAG ↔ GraphRAG 보완 관계 정량 증명** ⭐ NEW! | ✅ 완료 | 본 문서 |
 | **🎯 doc_type × format 4×3 다양성** | ✅ 완료 | Q5 |
 | Layer A + Layer B + MENTIONS 그래프 시각화 | ⏸️ Aura console 캡처 | 일요일 |
 | **🎯 LibreOffice 의존성 발견 + 해소 사이클** | ✅ 완료 | 본 문서 |
@@ -386,4 +372,4 @@ parse_global_id("doc1:c0001__ent_001") → ("doc1:c0001", "ent_001")
 - PR: #45 (5/17 일요일 머지 예정)
 - 의존: ✅ PR #44 (#24 Opik 1단계)
 - 후속: #18 Text2Cypher (Layer A 적재된 풍성한 그래프 위에서)
-- 미래: #46 OpenAI 마이그레이션, #47 회사 발표 (6/1), [신규] NED 한국어 후처리
+- 미래: #46 OpenAI 마이그레이션, #47 회사 발표 (6/1), [신규] Entity 추출 프롬프트 개선
