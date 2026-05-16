@@ -11,7 +11,13 @@
 - **관계**: ExtractedRelation.source/target (청크 내 local_id) 는 NED 단계에
   group_id 로 매핑하는 보조 테이블 필요 — 본 모듈이 책임
 
-관련 이슈: #15 (본), #13/#14 (입력 공급), #16 (후속 — 시각화).
+#24 (Opik 트레이싱):
+- 공개 진입점 `build_layer_b` 에 `@track` — span 입출력은 노드/관계 적재 수.
+- 개별 MERGE 호출 (_merge_group / _merge_relation) 은 부착 안 함 — 8문서
+  적재 시 span 폭증 방지 (1문서 = 수십 개 MERGE).
+
+관련 이슈: #15 (본), #13/#14 (입력 공급), #16 (후속 — 시각화),
+          #24 (Opik 트레이싱).
 """
 
 from __future__ import annotations
@@ -23,6 +29,7 @@ from dataclasses import dataclass
 from kg.linking import EntityGroup, LinkingResult
 from kg.neo4j_client import Neo4jClient
 from kg.ontology import EntityType, ExtractedEntity, ExtractedRelation, RelationType
+from observability.tracing import track
 
 logger = logging.getLogger(__name__)
 
@@ -130,6 +137,7 @@ def _build_local_to_group(linking: LinkingResult) -> dict[str, str]:
 
 
 # ── 공개 인터페이스 ───────────────────────────────────────
+@track
 def build_layer_b(
     linking: LinkingResult,
     relations: list[ExtractedRelation],
@@ -153,6 +161,10 @@ def build_layer_b(
 
     Returns:
         IngestResult — 적재 수치.
+
+    #24 Opik:
+    - 본 함수에 `@track` — span 입출력은 노드/관계 적재 수·소요.
+    - 환경 미설정 시 자동 no-op.
     """
     started = time.perf_counter()
 
