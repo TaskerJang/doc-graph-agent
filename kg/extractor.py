@@ -13,7 +13,13 @@ Spike (#8) 시행착오 박제:
 - 프롬프트 안의 JSON 예시는 {{...}} 로 escape (entity_extract_v1.md 참조)
 - LLM JSON 응답은 코드펜스 / 작은따옴표 등 변종 방어 코드 필수
 
-관련 이슈: #13 (본 작업), #8 (Spike), #14 (NED — 본 모듈의 출력이 입력).
+#24 (Opik 트레이싱):
+- 공개 진입점 `extract` 에 `@track` 부착 — Opik UI 에서 청크 수·소요·실패율 가시화.
+- 청크 단위 (_extract_chunk) 는 의도적으로 부착 안 함 — 8문서 × N청크 일괄
+  적재 시 trace 가 폭발하지 않도록. 필요하면 W5 에서 추가.
+
+관련 이슈: #13 (본 작업), #8 (Spike), #14 (NED — 본 모듈의 출력이 입력),
+          #24 (Opik 트레이싱).
 """
 
 from __future__ import annotations
@@ -41,6 +47,7 @@ from kg.ontology import (
     ExtractionResult,
     RelationType,
 )
+from observability.tracing import track
 
 logger = logging.getLogger(__name__)
 
@@ -252,6 +259,7 @@ async def _extract_chunk(
 
 
 # ── 공개 인터페이스 ──────────────────────────────────────────
+@track
 async def extract(
     chunks: list[dict[str, Any]],
     llm: LLMClient | None = None,
@@ -267,6 +275,10 @@ async def extract(
     DoD (#13):
     - 빈 청크 / 인식 실패 청크 graceful (KeyError 등 X)
     - 추출 결과를 #14 NED 의 입력으로 그대로 사용 가능
+
+    #24 Opik:
+    - 본 함수에 `@track` — span 입출력은 청크 수 / Entity·Relation 수.
+    - 환경 미설정 시 자동 no-op (`observability/tracing.py` 참조).
     """
     if not chunks:
         return ExtractionResult()
