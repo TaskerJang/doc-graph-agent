@@ -18,8 +18,15 @@ Spike (#8) 시행착오 박제:
 - 청크 단위 (_extract_chunk) 는 의도적으로 부착 안 함 — 8문서 × N청크 일괄
   적재 시 trace 가 폭발하지 않도록. 필요하면 W5 에서 추가.
 
+#17 (5/16 8문서 일괄 적재) — local_id 충돌 해결:
+- 청크 N 개에서 각각 `ent_001` 부터 부여 → 다중 청크 시 local_id 충돌
+- 해결 (옵션 3): chunk dict 에 옵셔널 `chunk_id` 키를 추가하면 본 모듈이
+  자동으로 모든 entity local_id 와 relation source/target 에
+  `{chunk_id}__{local_id}` prefix 부여 — global 유일성 확보.
+- chunk_id 없는 호출 (5/10 두산밥캣 1청크 sanity) 은 기존 동작 그대로.
+
 관련 이슈: #13 (본 작업), #8 (Spike), #14 (NED — 본 모듈의 출력이 입력),
-          #24 (Opik 트레이싱).
+          #17 (8문서 일괄), #24 (Opik 트레이싱).
 """
 
 from __future__ import annotations
@@ -67,6 +74,11 @@ MAX_TOKENS_PER_CHUNK = 1500
 PROMPTS_DIR              = Path(__file__).parent / "prompts"
 SYSTEM_PROMPT_PATH       = PROMPTS_DIR / "entity_system_v1.md"
 EXTRACT_PROMPT_PATH      = PROMPTS_DIR / "entity_extract_v1.md"
+
+# local_id global prefix 구분자.
+# `{chunk_id}__{local_id}` 의 `__` — '_' 단일은 chunk_id 안에 흔히 등장 (예:
+# `doc_abc:c0001`) 하므로 충돌 회피 위해 이중 underscore.
+_GLOBAL_ID_SEP = "__"
 
 
 # ── 모듈 레벨 Semaphore (이벤트 루프 생명주기 공유) ──────────
@@ -116,6 +128,66 @@ def _parse_extraction_json(raw: str) -> dict[str, Any]:
         # 큰따옴표 안의 작은따옴표 escape 시도 (회사 레포 동일 패턴)
         fixed = re.sub(r'(?<=: ")([^"]*)\'([^"]*?)(?=")', r"\1\'\2", cleaned)
         return json.loads(fixed)  # 두 번째도 실패하면 호출자가 잡음
+
+
+# ── chunk_id prefix 부여 (옵션 3 — #17) ──────────────────────
+def make_global_id(chunk_id: str, local_id: str) -> str:
+    """`{chunk_id}__{local_id}` 형식의 global id 생성.
+
+    역방향 파싱 (`parse_global_id`) 으로 어느 청크에서 나온 entity 인지
+    추적 가능 — Layer A 의 `(:Chunk) -[:MENTIONS]-> (:Entity)` 매핑에 사용.
+    """
+    return f"{chunk_id}{_GLOBAL_ID_SEP}{local_id}"
+
+
+def parse_global_id(global_id: str) -> tuple[str | None, str]:
+    """global id 를 (chunk_id, local_id) 로 분해.
+
+    prefix 가 없는 (구식) id 는 (None, id) 로 반환 — 5/10 두산밥캣 1청크
+    sanity 와 호환.
+    """
+    if _GLOBAL_ID_SEP in global_id:
+        chunk_id, local_id = global_id.split(_GLOBAL_ID_SEP, 1)
+        return chunk_id, local_id
+    return None, global_id
+
+
+def _apply_chunk_id_prefix(
+    result: ExtractionResult, chunk_id: str
+) -> ExtractionResult:
+    """ExtractionResult 의 모든 local_id / source / target 에 chunk_id prefix.
+
+    `_coerce_to_result` 가 source/target 의 local_id 유효성 검증을 마친 후
+    호출되므로, 본 함수는 매핑만 안전하게 수행.
+    """
+    if not chunk_id:
+        return result
+
+    # entity: local_id 만 prefix 부여
+    new_entities = [
+        ExtractedEntity(
+            local_id=make_global_id(chunk_id, e.local_id),
+            type=e.type,
+            canonical=e.canonical,
+            source_span=e.source_span,
+            section=e.section,
+        )
+        for e in result.entities
+    ]
+
+    # relation: source / target 둘 다 prefix (같은 청크 내 관계만 추출되므로
+    # 동일 chunk_id 로 prefix).
+    new_relations = [
+        ExtractedRelation(
+            source=make_global_id(chunk_id, r.source),
+            type=r.type,
+            target=make_global_id(chunk_id, r.target),
+            evidence=r.evidence,
+        )
+        for r in result.relations
+    ]
+
+    return ExtractionResult(entities=new_entities, relations=new_relations)
 
 
 # ── 응답 → Pydantic 변환 ─────────────────────────────────────
@@ -214,12 +286,14 @@ async def _extract_chunk(
 ) -> ExtractionResult:
     """Chunk → ExtractionResult.
 
-    chunk dict 예상 키: doc_id, section, text. 결측 시 placeholder 로 graceful.
-    Semaphore 로 동시성 제한 + asyncio.to_thread 로 sync LLMClient 감쌈.
+    chunk dict 예상 키: doc_id, section, text, (optional) chunk_id.
+    결측 시 placeholder 로 graceful.
+    chunk_id 가 있으면 결과의 local_id 들에 자동으로 prefix 부여 (#17).
     """
-    doc_id  = chunk.get("doc_id", "(unknown)")
-    section = chunk.get("section") or "(no section)"
-    text    = (chunk.get("text") or "").strip()
+    doc_id   = chunk.get("doc_id", "(unknown)")
+    section  = chunk.get("section") or "(no section)"
+    text     = (chunk.get("text") or "").strip()
+    chunk_id = chunk.get("chunk_id")  # #17 — global id prefix 용 (없으면 prefix 안 함)
 
     if not text:
         logger.info("빈 청크 skip (doc=%s section=%s)", doc_id, section)
@@ -251,9 +325,15 @@ async def _extract_chunk(
         return ExtractionResult()
 
     result = _coerce_to_result(data, section=section)
+
+    # #17 — chunk_id 가 주어지면 global id prefix. 없으면 (5/10 sanity) 원본 그대로.
+    if chunk_id:
+        result = _apply_chunk_id_prefix(result, chunk_id)
+
     logger.info(
-        "추출 OK doc=%s section=%s entities=%d relations=%d (%.2fs)",
-        doc_id, section, len(result.entities), len(result.relations), elapsed,
+        "추출 OK doc=%s chunk=%s section=%s entities=%d relations=%d (%.2fs)",
+        doc_id, chunk_id or "(no-id)", section,
+        len(result.entities), len(result.relations), elapsed,
     )
     return result
 
@@ -268,9 +348,10 @@ async def extract(
 
     - 청크별로 병렬 추출 (Semaphore 제한)
     - 결과는 entities/relations 모두 평탄화하여 합침
-    - local_id 는 청크 내에서만 유효 → 호출자(NED #14)가 청크 경계 알아야 함
-      대안: prefix 부여 (`{chunk_idx}__{local_id}`) — 본 작업은 단순 합침으로,
-      NED 단계에서 청크 경계 처리.
+    - **chunk dict 에 옵셔널 `chunk_id` 키가 있으면** 본 모듈이 자동으로
+      모든 entity local_id 와 relation source/target 에
+      `{chunk_id}__{local_id}` prefix 부여 → 청크 간 global 유일성 (#17).
+      없으면 (5/10 sanity 호환) 원본 local_id 유지.
 
     DoD (#13):
     - 빈 청크 / 인식 실패 청크 graceful (KeyError 등 X)
@@ -288,9 +369,11 @@ async def extract(
     extract_tmpl   = _load_prompt(EXTRACT_PROMPT_PATH)
 
     started = time.perf_counter()
+    has_chunk_id = any(c.get("chunk_id") for c in chunks)
     logger.info(
-        "Entity 추출 시작 — 청크 %d개  MAX_CONCURRENT=%d  model=%s",
+        "Entity 추출 시작 — 청크 %d개  MAX_CONCURRENT=%d  model=%s  global_id=%s",
         len(chunks), MAX_CONCURRENT, llm.config.model,
+        "ON" if has_chunk_id else "off",
     )
 
     results: list[ExtractionResult] = await asyncio.gather(

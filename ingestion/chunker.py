@@ -1,14 +1,24 @@
 # Ported from doc-summary-agent/chunker/chunker.py (#11).
 # Source: TaskerJang/doc-summary-agent@dev as of 2026-05-03.
-# 변경: 없음 (원본 그대로). 회사 레포의 인제스트 결과를 동일하게 재현하기 위한
-#   의도적 복붙이며, GraphRAG vs VectorRAG 비교의 정직성을 위해 chunk 정책
-#   (size=700, overlap=200, min=50)을 회사 레포 dev와 동일하게 유지한다.
+#
+# 변경 이력:
+# - 5/16, #17: USE_SIMPLE_CHUNKER 환경변수 분기 추가 (CPU 환경 fallback).
+#   기본값 OFF — 환경변수 안 켜면 회사 레포와 100% 동일 동작.
+#   ON 시 RecursiveCharacterTextSplitter 사용 (SemanticChunker 우회).
+#
+# 정직성 원칙:
+#   chunk 정책 (size=700, overlap=200, min=50) 은 회사 레포 dev와 동일 유지 —
+#   GraphRAG vs VectorRAG 비교 시 chunk 경계 변수를 통제하기 위해.
+#   USE_SIMPLE_CHUNKER=1 fallback 은 CPU 환경에서 SemanticChunker 가 비현실적인
+#   경우 (820자/31초, 5/16 발견) 의 escape hatch — 발표 자료의 trade-off 슬라이드
+#   증거로 사용.
 import logging
+import os
 import re
 from collections import Counter
 from typing import Literal, TypedDict
 
-from langchain_text_splitters import MarkdownTextSplitter
+from langchain_text_splitters import MarkdownTextSplitter, RecursiveCharacterTextSplitter
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +55,22 @@ _HEADING_PATTERN = re.compile(r"^(#{1,3} .+)$", re.MULTILINE)
 
 # S-02: SemanticChunker 싱글턴
 _semantic_splitter = None
+
+# ── #17 SIMPLE_CHUNKER fallback ────────────────────────────
+#
+# USE_SIMPLE_CHUNKER=1 환경변수 ON 시 SemanticChunker 우회하고
+# RecursiveCharacterTextSplitter 사용.
+#
+# 배경 (5/16, #17):
+# - LangChain SemanticChunker 가 임베딩을 문장 단위 sequential 호출 (batch 미사용)
+# - bge-m3 (568M params) + CPU 환경: 820자 / 31.3초 측정 (5/16 단독 벤치)
+# - 8문서 풀 실행 예상: 분할만 40분~1시간 → production 비현실적
+# - SemanticChunker 는 OpenAI API 같은 빠른 임베딩과만 호환 (GPU/API 환경 전제)
+#
+# 기본값 OFF — 회사 레포 동일 동작 유지.
+# ON 으로 키면 chunk 경계 알고리즘이 회사 레포와 달라지므로
+# GraphRAG vs VectorRAG 정밀 비교 시에는 끄고 사용.
+_SIMPLE_CHUNKER_ENV = "USE_SIMPLE_CHUNKER"
 
 # ── #75 메타데이터 enrichment 상수 ──────────────────────────
 
@@ -153,6 +179,21 @@ def _get_semantic_splitter():
 
 
 def _semantic_split(text: str) -> list[str]:
+    # #17 (5/16) — USE_SIMPLE_CHUNKER=1 켜져 있으면 SemanticChunker 우회.
+    # 배경: bge-m3 + CPU + SemanticChunker = 820자 / 31.3초 (비현실적).
+    # 발표 자료의 trade-off 슬라이드 증거 + production fallback.
+    if os.getenv(_SIMPLE_CHUNKER_ENV) == "1":
+        logger.info(
+            "%s=1 → SemanticChunker 우회, RecursiveCharacterTextSplitter 사용",
+            _SIMPLE_CHUNKER_ENV,
+        )
+        simple_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=DEFAULT_CHUNK_SIZE,
+            chunk_overlap=DEFAULT_CHUNK_OVERLAP,
+            separators=["\n\n", "\n", ". ", "。", "? ", "! ", " ", ""],
+        )
+        return simple_splitter.split_text(text)
+
     sentences = [s for s in re.split(KOREAN_SENTENCE_SPLIT_REGEX, text) if s.strip()]
     if len(sentences) < 3:
         logger.debug("문장 수 부족(%d) → SemanticChunker 우회", len(sentences))
