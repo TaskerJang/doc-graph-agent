@@ -1,7 +1,7 @@
 # 2026-05-17 — W4 Local Retriever (#19) 작업 일지
 
 > **WBS 1.14** — W4 Layer B: Local Retriever
-> **이슈**: #19 · **브랜치**: `feat/19-local-retriever` · **PR**: #49
+> **이슈**: #19 · **브랜치**: `feat/19-local-retriever` · **PR**: #49 · **후속 이슈**: #50
 
 ## 작업 컨텍스트
 
@@ -147,7 +147,7 @@ property key does not exist. The property `page` does not exist in database
 
 → **발표 슬라이드 10 (Entity 라벨 품질 challenge) 의 본질적 증거**. PR 머지 막을 사유 아니라 **박제할 발견**.
 
-→ **별도 이슈 (#X) 로 트래킹**: entity 재추출 / 회사명 normalization / fulltext index — W3 영역 작업, 5/24+ 추진.
+→ **별도 이슈 #50 으로 트래킹**: entity 재추출 / 회사명 normalization / fulltext index — W3 영역 작업, 5/24+ 추진.
 
 ### Discovery 4 — Local Retriever 의 응답 시간 trade-off
 
@@ -167,5 +167,5 @@ L4 가 9.2s 로 평균을 끌어올림. subgraph relations=15, chunks=3 → LLM 
 - 의존: ✅ #17 (8문서 적재 완료, 5/16), ✅ #18 (Text2Cypher 패턴 참고, PR #48)
 - 후속:
   - **#21** Routing Agent — Q vs L 분기 (키워드 "관계/관련/영향" → Local)
-  - **#X (신규)** Entity 추출 LLM 한계 — 회사명 정확 추출 + alias normalization (5/24+ W5 영역)
+  - **#50** Entity 추출 LLM 한계 — 회사명 정확 추출 + alias normalization (5/24+ W5 영역, 5/23 발표 전 해결 불요)
 - 미래: #46 OpenAI 마이그 후 GPT-5-mini 로 비교 측정 / fulltext index 추가
