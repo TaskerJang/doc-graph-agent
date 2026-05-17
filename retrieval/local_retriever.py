@@ -232,14 +232,15 @@ def _identify_entities(
 
 
 # ── 2단계: Neo4j 에서 entity 매칭 ────────────────────────────
-# Neo4j 5.x 호환: ORDER BY/LIMIT 은 RETURN 절 안에서만 허용되므로 CALL 서브쿼리로 격리.
-# (이전 버전에서 `WITH ... ORDER BY ... WITH collect(e)[..3]` 패턴이 5.x 파서에서
-#  SyntaxError 42I63 "ORDER BY, SKIP and LIMIT can only be used in this order in
-#  RETURN" 발생 — 5/17 정성 검증 (eval/w4_local_2026-05-17.json) 시 발견.)
+# Neo4j 5.x 호환:
+# - ORDER BY/LIMIT 은 RETURN 절 안에서만 허용되므로 CALL 서브쿼리로 격리.
+#   (이전 패턴 `WITH ... ORDER BY ... WITH collect(e)[..3]` 가 5.x 파서에서
+#    SyntaxError 42I63 발생 — 5/17 정성 검증 시 발견.)
+# - CALL (qname) { ... } 형태로 variable scope clause 명시 (5.x deprecation 해소).
+#   기존 `CALL { WITH qname ... }` 도 동작하지만 deprecation warning 발생.
 _MATCH_ENTITIES_CYPHER = """
 UNWIND $names AS qname
-CALL {
-  WITH qname
+CALL (qname) {
   MATCH (e:Entity)
   WHERE toLower(e.name) CONTAINS toLower(qname)
      OR ANY(a IN coalesce(e.aliases, []) WHERE toLower(a) CONTAINS toLower(qname))
@@ -299,12 +300,14 @@ WITH e, relations, collect(DISTINCT {
         co_name: co.name,
         co_labels: labels(co)
      })[..$max_related] AS co_mentions
-// entity 가 등장한 chunk 원문 (max_chunks 개만)
+// entity 가 등장한 chunk 원문 (max_chunks 개만).
+// 일부 청크는 page property 가 없을 수 있어 (5/17 발견 — 청크 메타데이터
+// 누락 케이스) properties(c2).page 로 안전 접근 (없으면 null).
 OPTIONAL MATCH (e)<-[:MENTIONS]-(c2:Chunk)
 WITH e, relations, co_mentions, collect(DISTINCT {
         chunk_id: c2.id,
         text: substring(c2.text, 0, $chunk_truncate),
-        page: c2.page
+        page: properties(c2).page
      })[..$max_chunks] AS chunks
 RETURN e.name AS name,
        labels(e) AS labels,
