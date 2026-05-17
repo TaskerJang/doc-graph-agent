@@ -232,15 +232,21 @@ def _identify_entities(
 
 
 # ── 2단계: Neo4j 에서 entity 매칭 ────────────────────────────
+# Neo4j 5.x 호환: ORDER BY/LIMIT 은 RETURN 절 안에서만 허용되므로 CALL 서브쿼리로 격리.
+# (이전 버전에서 `WITH ... ORDER BY ... WITH collect(e)[..3]` 패턴이 5.x 파서에서
+#  SyntaxError 42I63 "ORDER BY, SKIP and LIMIT can only be used in this order in
+#  RETURN" 발생 — 5/17 정성 검증 (eval/w4_local_2026-05-17.json) 시 발견.)
 _MATCH_ENTITIES_CYPHER = """
 UNWIND $names AS qname
-MATCH (e:Entity)
-WHERE toLower(e.name) CONTAINS toLower(qname)
-   OR ANY(a IN coalesce(e.aliases, []) WHERE toLower(a) CONTAINS toLower(qname))
-WITH qname, e
-ORDER BY size(e.name) ASC      // 짧은 이름 우선 (정확 매칭 가까운 쪽)
-WITH qname, collect(e)[..3] AS top_matches  // entity 당 top 3 매칭
-UNWIND top_matches AS e
+CALL {
+  WITH qname
+  MATCH (e:Entity)
+  WHERE toLower(e.name) CONTAINS toLower(qname)
+     OR ANY(a IN coalesce(e.aliases, []) WHERE toLower(a) CONTAINS toLower(qname))
+  RETURN e
+  ORDER BY size(e.name) ASC
+  LIMIT 3
+}
 RETURN qname,
        elementId(e) AS id,
        e.name AS name,
