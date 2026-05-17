@@ -264,3 +264,186 @@ def enforce_limit(cypher: str, limit: int = 100) -> str:
 - 후속: #21 Routing Agent — 질문 유형에 따라 Layer A / Layer B 분기
 - 발표: 5/23 멘토링 발표 슬라이드 10, 11 의 정성 검증 결과
 - 미래: #46 OpenAI 마이그 후 GPT-5-mini 로 Text2Cypher 비교 측정
+
+---
+
+# 2026-05-17 — W4 Local Retriever 평가 셋 (#19) — Layer B 추가
+
+> **목적**: `retrieval/local_retriever.py` 정성 검증. **관계 질의** (L 시리즈) 에 강한지 + VectorRAG 와 다른 답변 패턴 보이는지 확인.
+>
+> **차이점**: Text2Cypher (Q 시리즈) = LLM 이 Cypher 자유 생성, Local Retriever (L 시리즈) = LLM 이 entity 만 식별 → 결정적 1-hop Cypher 템플릿으로 subgraph 추출.
+
+## 적용 동작 흐름
+
+```
+1단계: 질문 → LLM (entity 식별) → [{name, label}, ...]
+2단계: Neo4j (name/aliases CONTAINS 매칭) → 실제 Entity 노드들
+3단계: 1-hop Layer B 관계 + co-mention + sample chunks 추출 (결정적 Cypher 템플릿)
+4단계: LLM (subgraph → 자연어 답변)
+```
+
+## 평가 셋 질문 5종 (L1~L5)
+
+### L1. 단일 entity 1-hop 관계 (전형적 케이스)
+
+**질문**: "두산밥캣과 함께 언급된 리스크가 있는가?"
+
+**의도**: Q4 와 동일 질문이지만 Local Retriever 경로. Q4 의 Text2Cypher 결과와 답변 패턴 차이를 확인 (= DoD: VectorRAG 와 다른 답변 패턴).
+
+**기대 동작**:
+- 1단계: entity = `[{name: "두산밥캣", label: "Company"}]`
+- 2단계: 매칭 1개 이상
+- 3단계: layer_b_relations (FACES_RISK 있으면) 또는 co_mentioned (없으면)
+- 4단계: 답변에 "두산밥캣" + risk 언급, "관계" 단어 활용
+
+**graceful fallback**: 두산밥캣 entity 0개 매칭 시 → 친절 안내.
+
+---
+
+### L2. 두 entity 의 관계 (공통 이웃)
+
+**질문**: "한화와 두산밥캣은 어떻게 관련되어 있나?"
+
+**의도**: 2개 Company 의 공통 이웃 또는 co-mention 패턴 탐색. Text2Cypher 로는 어려운 케이스 (LLM 이 Cypher 짤 때 두 entity 의 교집합 쿼리를 정확히 짜기 까다로움).
+
+**기대 동작**:
+- 1단계: entity = `[{name: "한화"}, {name: "두산밥캣"}]`
+- 2단계: 양쪽 모두 매칭 (한화_두산밥캣 분석 리포트 문서 적재됨)
+- 3단계: 각 entity 별 co_mentioned 에 상대방 등장 또는 같은 청크 등장
+- 4단계: "동일 문서에서 비교 대상" 식 답변
+
+---
+
+### L3. 단일 entity 의 metric / outlook 묶음
+
+**질문**: "미래에셋증권의 주요 지표와 전망은?"
+
+**의도**: HAS_METRIC + HAS_OUTLOOK 1-hop traversal. 자기 회사 보고서이므로 entity 가 추출됐는지 자체가 검증 포인트 (5/16 발견: 자기 회사명 미추출 패턴).
+
+**기대 동작**:
+- 1단계: entity = `[{name: "미래에셋증권", label: "Company"}]`
+- 2단계: 매칭 0~1개 (자기 회사명 추출 안 됐을 가능성 높음)
+- 4단계: **매칭 0개 시 → fallback 메시지로 정직하게 안내**:
+  > "미래에셋증권 entity 가 그래프에서 추출되지 않았습니다. 자기 회사 보고서는 '당사' 같은 대명사로 작성되어 entity 추출 단계에서 누락된 것으로 보입니다. 이는 entity 추출 LLM 의 한계로, production 환경에서 회사명 normalization 단계 추가가 필요합니다."
+
+→ **발표 슬라이드 10 (Entity 라벨 품질 challenge) 의 자기 회사 case 보강**.
+
+---
+
+### L4. Layer B 가 비어 있는 entity (co-mention fallback)
+
+**질문**: "공모발행액 23조에 대해 어떤 위험이 함께 언급되나?"
+
+**의도**: 5/16 발견 **라벨 품질 challenge** entity ('공모발행액 ...' 가 Company 로 잘못 분류) 가 Local Retriever 에서 어떻게 다뤄지는지. Layer B 관계 없음 → co_mention 으로 fallback.
+
+**기대 동작**:
+- 1단계: entity = `[{name: "공모발행액 23조"}]` (라벨 비움)
+- 2단계: 매칭 1개 (Company 라벨로 적재된 metric entity)
+- 3단계: layer_b_relations 비어 있음 / co_mentioned 다수
+- 4단계: 답변에 "**라벨 품질 challenge**" 정직 언급 + co-mention 결과 안내
+
+→ **발표 슬라이드 10 (Entity 라벨 품질) 직접 데모 자료**.
+
+---
+
+### L5. Entity 무관 글로벌 질문 (Layer C 라우팅 후보)
+
+**질문**: "전체 8문서의 주요 트렌드와 흐름은?"
+
+**의도**: 특정 entity 가 아닌 글로벌 질의 → Local Retriever 가 entity 식별 단계에서 빈 배열 반환하고 "Layer C 적합" 안내해야 함. **#21 Routing Agent** 의 명분 확보.
+
+**기대 동작**:
+- 1단계: entity = `[]` + explanation = "글로벌 질의 — Layer C 적합"
+- 2~3단계: skip
+- 4단계: fallback 안내 ("이 질문은 community summary 가 적합합니다")
+
+→ **VectorRAG ↔ GraphRAG 보완 관계** 슬라이드 11 의 정성 보강.
+
+---
+
+## L 시리즈 답변 가이드 (Layer B 특성)
+
+**Text2Cypher (Q 시리즈) 와의 답변 패턴 차이** (DoD 핵심):
+
+| 특성 | Q 시리즈 (Text2Cypher) | L 시리즈 (Local Retriever) |
+|------|------------------------|----------------------------|
+| 답변 톤 | "쿼리 결과 N건 발견" | "X 와 관련된 Y, Z 가 있음" |
+| 근거 형식 | RETURN 컬럼 값 나열 | 1-hop 이웃 + 원문 인용 |
+| 빈 결과 | "찾지 못했습니다" | "해당 entity 의 이웃 정보가 없습니다" |
+| 강점 | factual / topN / 정량 | 관계 / 연관 / 의미 |
+| 약점 | 다 entity 교집합 어려움 | 글로벌 / 통계 질의 부적합 |
+
+---
+
+## L 시리즈 발표 슬라이드 연결 (5/23)
+
+| 평가 셋 | 발표 슬라이드 | 검증 포인트 |
+|---------|---------------|-------------|
+| L1 | 슬라이드 11 (보완 관계) | Q4 와 답변 패턴 차이 |
+| L2 | 슬라이드 13 (NEW: Local 데모) | 다 entity 교집합 |
+| **L3** | **슬라이드 10 (라벨 품질)** ⭐ | 자기 회사명 미추출 |
+| **L4** | **슬라이드 10 (라벨 품질)** ⭐ | metric 라벨 혼재 정직 보고 |
+| L5 | 슬라이드 14 (Layer C/Routing 명분) | 글로벌 질의는 Layer C 적합 |
+
+---
+
+## Local Retriever 모듈 (`retrieval/local_retriever.py`) 작업 흐름
+
+### 1. Entity 식별 프롬프트 (`prompts/local_retriever_entity_v1.md`)
+
+- 입력: 자연어 질문
+- 출력: `{"entities": [{name, label}], "explanation": "..."}`
+- 라벨 hint 만, 강제 아님 (5/16 라벨 품질 challenge 인지)
+
+### 2. Entity 매칭 (Neo4j 결정적 Cypher)
+
+```cypher
+UNWIND $names AS qname
+MATCH (e:Entity)
+WHERE toLower(e.name) CONTAINS toLower(qname)
+   OR ANY(a IN coalesce(e.aliases, []) WHERE toLower(a) CONTAINS toLower(qname))
+WITH qname, e
+ORDER BY size(e.name) ASC  // 짧은 매칭 우선
+WITH qname, collect(e)[..3] AS top_matches
+UNWIND top_matches AS e
+RETURN qname, elementId(e) AS id, e.name AS name, labels(e) AS labels,
+       e.aliases AS aliases, coalesce(e.member_count, 1) AS member_count
+LIMIT 30
+```
+
+### 3. Subgraph 확장 (결정적 1-hop Cypher 템플릿)
+
+```cypher
+UNWIND $ids AS eid
+MATCH (e:Entity) WHERE elementId(e) = eid
+OPTIONAL MATCH (e)-[r]-(neighbor:Entity)
+WHERE type(r) IN ['FACES_RISK','HAS_METRIC','HAS_OUTLOOK','RECOMMENDED_FOR']
+WITH e, collect(DISTINCT {rel: type(r), direction: ..., neighbor_name: neighbor.name, neighbor_labels: labels(neighbor)})[..$max_related] AS relations
+OPTIONAL MATCH (e)<-[:MENTIONS]-(c:Chunk)-[:MENTIONS]->(co:Entity)
+WHERE co <> e
+WITH e, relations, collect(DISTINCT {co_name: co.name, co_labels: labels(co)})[..$max_related] AS co_mentions
+OPTIONAL MATCH (e)<-[:MENTIONS]-(c2:Chunk)
+WITH e, relations, co_mentions, collect(DISTINCT {chunk_id: c2.id, text: substring(c2.text, 0, $chunk_truncate), page: c2.page})[..$max_chunks] AS chunks
+RETURN e.name AS name, labels(e) AS labels, coalesce(e.member_count, 1) AS member_count, relations, co_mentions, chunks
+```
+
+### 4. 답변 프롬프트 (`prompts/local_retriever_answer_v1.md`)
+
+- 입력: 질문 + subgraph context (JSON)
+- 우선순위: layer_b_relations > co_mentioned > sample_chunks
+- 라벨 품질 challenge 정직 보고 가이드 포함
+
+### 5. graceful fallback
+
+- entity 식별 0개 → "Layer C 적합" 안내 (L5 패턴)
+- Neo4j 매칭 0개 → "그래프에 없습니다" 안내 (L3 패턴)
+- subgraph 빈 결과 → "이웃 정보 없습니다" 안내 (L4 패턴)
+
+---
+
+## 의존 / 후속 (#19)
+
+- 의존: ✅ #17 (8문서 적재), ✅ #18 (Text2Cypher 패턴 참고)
+- 후속: **#21** Routing Agent — Q vs L 분기 결정 (키워드 "관계/관련/영향" → Local)
+- 발표: 슬라이드 10, 11, 13, 14
+- 미래: #46 OpenAI 마이그 후 GPT-5-mini 로 비교 측정 / 5/24+ fulltext index 추가 시 entity 매칭 정확도 ↑
