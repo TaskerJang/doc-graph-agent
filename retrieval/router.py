@@ -25,13 +25,19 @@ W4 통합 진입점. 사용자 질문을 받아 세 retriever 중 하나로 라�
   결정적 분기를 1단계로 두면 디버깅 / 평가 / 발표 시연 모두 명확.
 - **LLM fallback 은 필요한 만큼만**: 키워드 미매칭 시에만 호출 → 토큰 비용
   최소화. 단순 factual 질문은 LLM 호출 없이 t2c 로 라우팅.
-- **graceful default**: LLM 도 실패하면 → t2c (Microsoft GraphRAG 의 "Basic
-  Search" / NeoConverse 의 "Intelligent fallback mechanism" 패턴).
+- **graceful default**: LLM 도 실패하면 → local (5/25 v2 갱신, 이전 t2c).
+
+5/25 v2 박힘:
+- DEFAULT_ROUTE: "t2c" → "local" 변경
+- ROUTER_PROMPT_PATH: router_v1.md → router_v2.md 변경
+- 단일 entity 사실 / 관계 / 속성 / 단일 문서 컨텍스트 모두 local 로 라우팅
+- t2c 는 명백한 top-N / 집계 / 필터 / 메타데이터 비교에만 제한
+- dryrun_80qa 결과 (VectorRAG 5/5 t2c rows=0 실패) 박제 후 결정
 
 키워드 매핑 (5/17 결정):
 - "관계 / 관련 / 연관 / 영향 / 함께 / 이웃 / 어떻게" → **local**
 - "트렌드 / 전체 / 흐름 / 요약 / community / 글로벌 / 패턴 / 주제" → **community**
-- 그 외 (factual / 몇 / 개수 / top / 특정 문서 등) → **t2c** (기본값)
+- 그 외 (factual / 몇 / 개수 / top / 특정 문서 등) → **local** (v2 default)
 
 향후 확장 (5/24+):
 - Semantic router (embedding 기반) 로 키워드 매칭의 어휘 한계 보완 가능
@@ -120,11 +126,12 @@ COMMUNITY_KEYWORDS: tuple[str, ...] = (
 )
 
 # 기본 라우트 — 키워드 + LLM 모두 결정 못하면 여기로
-DEFAULT_ROUTE: Route = "t2c"
+# 5/25 v2: "t2c" → "local" 변경. 단일 entity 사실 질의가 압도적으로 많음을 반영.
+DEFAULT_ROUTE: Route = "local"
 
-# 프롬프트 경로
+# 프롬프트 경로 — 5/25 v2: router_v1.md → router_v2.md
 PROMPTS_DIR = Path(__file__).parent / "prompts"
-ROUTER_PROMPT_PATH = PROMPTS_DIR / "router_v1.md"
+ROUTER_PROMPT_PATH = PROMPTS_DIR / "router_v2.md"
 
 # LLM fallback 설정
 TEMPERATURE_ROUTER = 0.0  # 라우팅은 결정적 — 가장 낮게
@@ -173,8 +180,8 @@ def _classify_by_keywords(question: str) -> RouteDecision:
     - 둘 다 매칭 → 더 많은 쪽 (동률이면 community 우선 — 전체 질의는 보통 community 의도)
     - 아무것도 매칭 안 됨 → route=None 의미로 빈 RouteDecision (LLM fallback 으로 갈 signal)
 
-    Note: 반환값의 route 가 "t2c" 면 두 가지 의미일 수 있음:
-    - 매칭된 키워드 있음 + 결과적으로 t2c 가 더 적합 (지금은 없음)
+    Note: 반환값의 route 가 DEFAULT_ROUTE (= "local", 5/25 v2) 면 두 가지 의미일 수 있음:
+    - 매칭된 키워드 있음 + 결과적으로 local 이 더 적합 (지금은 없음)
     - 매칭 0개 → caller 가 matched_keywords 비어 있는지로 LLM fallback 트리거
     """
     q = question.lower() if question else ""
@@ -243,7 +250,7 @@ def _call_llm_router(
 def _classify_by_llm(
     llm: LLMClient, question: str, system_prompt: str
 ) -> RouteDecision:
-    """LLM 으로 라우팅 결정. 실패하면 default (t2c) 로 fallback.
+    """LLM 으로 라우팅 결정. 실패하면 default (local, 5/25 v2) 로 fallback.
 
     LLM 응답 예상 형식:
       {"route": "t2c" | "local" | "community", "reasoning": "..."}
@@ -300,7 +307,7 @@ def decide_route(
 ) -> RouteDecision:
     """질문 → RouteDecision (라우팅 결정만, retriever 호출은 X).
 
-    1단계 키워드 분기 → 매칭 0개면 2단계 LLM fallback. LLM 실패 시 default(t2c).
+    1단계 키워드 분기 → 매칭 0개면 2단계 LLM fallback. LLM 실패 시 default(local, 5/25 v2).
 
     Args:
         question: 사용자 자연어 질문.
@@ -342,9 +349,9 @@ def route_and_answer(
     """자연어 질문 → 라우팅 → 해당 retriever 호출 → 통합 답변.
 
     DoD (#21):
-    - 키워드 기반 분기 (관계 → local, 트렌드 → community, 기타 → t2c) ✅
+    - 키워드 기반 분기 (관계 → local, 트렌드 → community, 기타 → local) ✅
     - LLM fallback (키워드 매칭 0개 시) ✅
-    - graceful default — LLM 실패 시 t2c ✅
+    - graceful default — LLM 실패 시 local (5/25 v2) ✅
     - 통합 진입점으로 발표 슬라이드 14 데모 가능 ✅
 
     Args:
