@@ -15,9 +15,9 @@ RAGAS Answer Correctness + GraphRAG-Bench Accuracy 결합 — 의미적 일치 L
 from eval.metrics.answer_correctness import judge_answer_correctness
 
 result = judge_answer_correctness(
-    question="두산밥칿의 목표주가는?",
+    question="두산밥캣의 목표주가는?",
     reference="80,000원",
-    prediction="두산밥칿의 목표주가는 80,000원입니다.",
+    prediction="두산밥캣의 목표주가는 80,000원입니다.",
 )
 # {"answer_correctness": 5, "reason": "수치 정확 일치"}
 """
@@ -30,11 +30,9 @@ from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_excep
 from openai import RateLimitError, APITimeoutError, APIConnectionError
 
 from eval.metrics.faithfulness_judge import (
-    _active_judge_client,
-    _active_judge_model,
-    _judge_strict_schema_supported,
     _is_openai_native_model,
     _relax_schema,
+    _REASONING_OFF_BODY,
 )
 
 logger = logging.getLogger(__name__)
@@ -57,6 +55,7 @@ def _call_correctness_api(prompt: str, response_format: dict) -> dict:
     client = fj._active_judge_client
     model = fj._active_judge_model
     strict_supported = fj._judge_strict_schema_supported
+    use_openrouter = fj._use_openrouter_extras
 
     rf = response_format if strict_supported else _relax_schema(response_format)
 
@@ -65,12 +64,15 @@ def _call_correctness_api(prompt: str, response_format: dict) -> dict:
         "messages": [{"role": "user", "content": prompt}],
         "max_completion_tokens": 1500,
         "response_format": rf,
-        "timeout": 30,
+        "timeout": 60,  # 30 → 60s (reasoning 모델 대응)
     }
+    # Model-specific 분기 — faithfulness_judge 와 동일 패턴
     if _is_openai_native_model(model):
         call_kwargs["reasoning_effort"] = "low"
-    else:
-        call_kwargs["extra_body"] = {"reasoning": {"enabled": False}}
+    elif use_openrouter:
+        # OpenRouter 경유 (Claude/Kimi/DeepSeek) — reasoning 3중 OFF
+        # faithfulness_judge._REASONING_OFF_BODY 재사용 (max_tokens: 1 공식 권장)
+        call_kwargs["extra_body"] = _REASONING_OFF_BODY
 
     try:
         response = client.chat.completions.create(**call_kwargs)
@@ -93,14 +95,21 @@ def _call_correctness_api(prompt: str, response_format: dict) -> dict:
     if not raw_content:
         msg = response.choices[0].message if response.choices else None
         reasoning_content = getattr(msg, "reasoning_content", None) if msg else None
-        if reasoning_content and "{" in reasoning_content:
-            try:
-                start = reasoning_content.find("{")
-                end = reasoning_content.rfind("}")
-                if start >= 0 and end > start:
-                    return json.loads(reasoning_content[start:end+1])
-            except (json.JSONDecodeError, ValueError):
-                pass
+        reasoning = getattr(msg, "reasoning", None) if msg else None
+        finish_reason = response.choices[0].finish_reason if response.choices else "?"
+        logger.warning(
+            "Answer Correctness 빈 content (model=%s finish_reason=%s) — fallback 시도",
+            model, finish_reason,
+        )
+        for candidate in (reasoning_content, reasoning):
+            if candidate and "{" in candidate:
+                try:
+                    start = candidate.find("{")
+                    end = candidate.rfind("}")
+                    if start >= 0 and end > start:
+                        return json.loads(candidate[start:end+1])
+                except (json.JSONDecodeError, ValueError):
+                    continue
         return {}
 
     if raw_content.startswith("```"):
