@@ -1,1 +1,52 @@
-[]
+[
+  {
+    "id": "graph_001",
+    "qa_set": "graphrag",
+    "pattern": "1hop",
+    "question": "두산밥칿과 함께 언급된 리스크는?",
+    "answer": "관세, 멕시코 공장 관련, 딜러 재고",
+    "expected_route": "local",
+    "key_entities": ["두산밥칿", "관세", "멕시코", "딜러 재고"],
+    "note": "⭐ 시드 QA — explore_graph.py 의 risk_company 세그먼트 결과로 정답 검증 필요"
+  },
+  {
+    "id": "graph_002",
+    "qa_set": "graphrag",
+    "pattern": "aggregate",
+    "question": "전체 그래프에서 가장 많이 언급된 Company entity TOP 5는?",
+    "answer": "explore_graph.py top_entities 결과 기반 작성 필요",
+    "expected_route": "t2c",
+    "key_entities": [],
+    "note": "⭐ 시드 QA — W4 eval 의 Q5 동일 패턴. Company 라벨 품질 이슈 검증용"
+  },
+  {
+    "id": "graph_003",
+    "qa_set": "graphrag",
+    "pattern": "filter",
+    "question": "보도자료(disclosure) 유형 문서에서 언급된 entity 들은?",
+    "answer": "explore_graph.py documents + Q3 정답 참고",
+    "expected_route": "t2c",
+    "key_entities": ["금감원", "보도자료", "회사채"],
+    "note": "⭐ 시드 QA — W4 eval 의 Q3 동일 패턴. doc_type 필터 + entity 집계"
+  },
+  {
+    "id": "graph_004",
+    "qa_set": "graphrag",
+    "pattern": "intersection",
+    "question": "한화와 두산밥칿은 어떻게 관련되어 있나?",
+    "answer": "explore_graph.py shared_entities 결과 기반 작성 필요",
+    "expected_route": "local",
+    "key_entities": ["한화", "두산밥칿"],
+    "note": "⭐ 시드 QA — W4 eval 의 L2 동일 패턴. 두 Company 교집합"
+  },
+  {
+    "id": "graph_005",
+    "qa_set": "graphrag",
+    "pattern": "metadata",
+    "question": "전체 적재된 문서는 몇 개이며, 각각의 doc_type 은 무엇인가?",
+    "answer": "explore_graph.py documents 결과 기반 작성 필요 — 예: 8개 (research_report 5, disclosure 1, internal_report 2)",
+    "expected_route": "t2c",
+    "key_entities": [],
+    "note": "⭐ 시드 QA — 그래프 메타데이터 직접 질의"
+  }
+]
