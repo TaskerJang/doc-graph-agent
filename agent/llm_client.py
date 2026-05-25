@@ -12,6 +12,18 @@ OpenAI SDK 호환 — Kimi, OpenRouter, OpenAI, DeepSeek, Grok 모두 동일 코
 - scripts/run_qa_eval.py 에서 --llm-model / --llm-base-url / --llm-api-key-env 인자로 토글
 
 호출 안 하면 KIMI_* 환경변수 사용 (기존 동작 유지).
+
+## Reasoning OFF for OpenRouter reasoning models (#53 후속, PR #54 dev 독립 적용)
+
+Kimi K2.5, DeepSeek V3.2 등 reasoning 모델에서 thinking tokens 가 max_tokens 다
+소진한 뒤 content 는 빈 문자열로 반환되는 현상 해소.
+
+OpenRouter 공식 문서 (https://openrouter.ai/docs/guides/best-practices/reasoning-tokens) 의
+reasoning 파라미터로 OFF:
+- reasoning: {"max_tokens": 1} — 모든 모델 호환 (공식 권장)
+- reasoning: {"enabled": false} — Anthropic 일부 모델
+
+OpenRouter 경유 시 extra_body 박아 전달. OpenAI 직결 / Kimi 직결은 무시.
 """
 
 from __future__ import annotations
@@ -27,6 +39,21 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 load_dotenv()
 
 logger = logging.getLogger(__name__)
+
+
+# ── Reasoning OFF for OpenRouter reasoning models ──────────
+# 공식 문서: https://openrouter.ai/docs/guides/best-practices/reasoning-tokens
+# 정답 패턴 (3중 안전):
+#   - enabled: false  → Anthropic 일부 모델
+#   - max_tokens: 1   → 모든 모델 호환 (공식 권장값)
+#   - exclude: true   → reasoning 응답 전달 X
+_REASONING_OFF_BODY = {
+    "reasoning": {
+        "enabled": False,
+        "max_tokens": 1,
+        "exclude": True,
+    },
+}
 
 
 @dataclass(frozen=True)
@@ -73,8 +100,13 @@ class LLMConfig:
             raise RuntimeError("--llm-base-url 인자 필요")
         return cls(api_key=api_key, base_url=base_url, model=model)
 
+    @property
+    def is_openrouter(self) -> bool:
+        """OpenRouter 경유 여부 — extra_body 전달 분기용."""
+        return "openrouter" in self.base_url.lower()
 
-# ── Runtime active config (#127) ───────────────────────────
+
+# ── Runtime active config (#127) ───────────────────────
 # configure_llm() 호출 전: None → LLMClient() 호출 시 from_env() 사용
 # configure_llm() 호출 후: 명시 config 사용 → 모든 LLMClient 인스턴스 영향
 _active_config: LLMConfig | None = None
@@ -97,8 +129,9 @@ def configure_llm(
         model=model, base_url=base_url, api_key_env=api_key_env
     )
     logger.info(
-        "LLM 재설정: model=%s base_url=%s api_key_env=%s",
+        "LLM 재설정: model=%s base_url=%s api_key_env=%s openrouter=%s",
         _active_config.model, _active_config.base_url, api_key_env,
+        _active_config.is_openrouter,
     )
 
 
@@ -108,6 +141,7 @@ class LLMClient:
     - 단일 진입점: chat(messages, **kwargs)
     - tenacity 로 재시도
     - configure_llm() 호출됐으면 그 config 사용, 안 됐으면 from_env()
+    - OpenRouter 경유 시 reasoning OFF 자동 적용 (extra_body)
     """
 
     def __init__(self, config: LLMConfig | None = None) -> None:
@@ -141,8 +175,33 @@ class LLMClient:
         if response_format is not None:
             kwargs["response_format"] = response_format
 
+        # OpenRouter 경유 시 reasoning OFF 박기 (공식 문서 패턴)
+        # Kimi K2.5 / DeepSeek V3.2 등 reasoning 모델의 빈 응답 방지
+        # Kimi 직결 (api.moonshot.cn) / OpenAI 직결은 무시
+        if self.config.is_openrouter:
+            kwargs["extra_body"] = _REASONING_OFF_BODY
+
         resp = self._client.chat.completions.create(**kwargs)
-        return resp.choices[0].message.content or ""
+        msg = resp.choices[0].message
+        content = (msg.content or "").strip()
+
+        # 빈 응답 진단 + reasoning_content fallback
+        # OpenRouter reasoning 모델은 content 비어도 reasoning 필드에
+        # 실제 답변이 박혀있을 수 있음
+        if not content:
+            finish_reason = resp.choices[0].finish_reason or "?"
+            reasoning_content = getattr(msg, "reasoning_content", None)
+            reasoning = getattr(msg, "reasoning", None)
+            logger.warning(
+                "LLM 빈 content (model=%s finish_reason=%s) — fallback 시도",
+                self.config.model, finish_reason,
+            )
+            if reasoning_content and reasoning_content.strip():
+                return reasoning_content
+            if reasoning and reasoning.strip():
+                return reasoning
+
+        return content
 
     def hello(self) -> str:
         return self.chat(
