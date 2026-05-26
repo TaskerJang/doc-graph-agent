@@ -1,6 +1,4 @@
-# doc-graph-agent
 
-**GraphRAG는 어디서 빛나고 어디서 무너지는가 — 80 QA로 진단한 GraphRAG의 적용 영역 지도**
 
 [![Python](https://img.shields.io/badge/Python-3.11+-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
 [![Neo4j](https://img.shields.io/badge/Neo4j-LPG-008CC1?style=flat-square&logo=neo4j&logoColor=white)](https://neo4j.com/)
