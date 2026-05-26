@@ -22,11 +22,8 @@
 [![Velog](https://img.shields.io/badge/Velog-26%20posts-20C997?style=flat-square&logo=velog&logoColor=white)](https://velog.io/@taskerjang)
 [![Mentor](https://img.shields.io/badge/Mentor-Hardy%20%EC%A0%95%EC%9D%B4%ED%83%9C-blueviolet?style=flat-square)](https://github.com/tteon)
 
-<br>
 
-[**🎯 핵심 발견**](#-핵심-발견) · [**🏗️ 아키텍처**](#-아키텍처--seocho-3-layer) · [**📊 측정 결과**](#-측정-결과--80-qa-기준) · [**🚀 빠른 시작**](#-빠른-시작) · [**🛣️ 다음 단계**](#-다음-단계--p1p6)
-
-</div>
+</br>
 
 ---
 
@@ -83,34 +80,12 @@
 
 ---
 
-## 🏗️ 아키텍처 — SEOCHO 3-Layer
+## 🏗️ 아키텍처
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                       사용자 자연어 질의                       │
-└──────────────────────────┬──────────────────────────────────┘
-                           ▼
-              ┌────────────────────────┐
-              │   🧭 Routing Agent     │  ← keyword + LLM fallback
-              │   (87.5% accuracy)     │
-              └─────────┬──────────────┘
-                        │
-        ┌───────────────┼─────────────────┐
-        ▼               ▼                 ▼
-┌──────────────┐  ┌─────────────┐  ┌───────────────┐
-│  Layer A     │  │  Layer B    │  │  Layer C      │
-│ Text2Cypher  │  │ Local       │  │ Community     │
-│ (factual)    │  │ Retriever   │  │ Summary       │
-│              │  │ (relations) │  │ (global)      │
-└──────────────┘  └─────────────┘  └───────────────┘
-        │               │                 │
-        └───────────────┴─────────────────┘
-                        ▼
-              ┌────────────────────────┐
-              │  📦 Neo4j (DozerDB)    │
-              │  Knowledge Graph       │
-              └────────────────────────┘
-```
+<img width="810" height="700" alt="image" src="https://github.com/user-attachments/assets/ad381a34-2d56-4c74-83b0-cb402fab1474" />
+
+
+
 
 | Layer | 책임 | 적합 질의 유형 | 검색 전략 | 본 측정 결과 |
 |---|---|---|---|---|
@@ -147,45 +122,7 @@
 
 </div>
 
-### Pattern별 강약 진단
 
-```
-✅ 강점 영역 (Correctness ≥ 4)
-├── negative      ████████████████████  5.00  (4건)
-├── limitation    ██████████████████    4.50  (2건)
-└── filter_agg    ██████                1.60  (5건, 1건 만점)
-
-❌ 약점 영역 (Correctness ≈ 1.0)
-├── numerical          █  1.30  (23건) ← Metric 노드 부재
-├── 1hop               █  1.00  (10건) ← Entity 라벨 오분류
-├── multi_doc_trend    █  1.00  (10건) ← Layer C 핵심 미구현
-├── intersection       █  1.00  ( 8건) ← Entity 라벨 오분류
-├── factual            █  1.00  ( 9건)
-├── causal             █  1.00  ( 5건)
-└── summary            █  1.00  ( 4건)
-```
-
-> 📋 전체 표 5종 (LLM 비교 / qa_set / pattern / Routing / 만점 케이스) → [`eval/results/report_tables.md`](eval/results/report_tables.md)
-
-### 핵심 진단
-
-```
-80 QA → 71건 실패 (Correctness < 3)
-                    │
-        ┌───────────┼────────────────────┐
-        ▼           ▼                    ▼
-   Entity 라벨    Metric 노드       OCR 글자 깨짐
-   오분류         미생성             (두산밥칿)
-   (~40건)       (~17건)            (11건)
-        │
-        └─→ "Company 라벨 30개 모두 *수치 entity*"
-            "공모발행액 23조 7,050억원" → Company ❌
-```
-
-> 💡 **단일 root cause**: 전처리 LLM이 긴 한국어 명사구를 고유명사로 오인 → 그래프 전체 무너짐.
-> production GraphRAG의 진짜 비용은 답변 단계가 아닌 *전처리 품질 보증*.
-
----
 
 ## 🚀 빠른 시작
 
@@ -231,11 +168,6 @@ uv run python scripts/make_report_tables.py \
   --out  eval/results/report_tables.md
 ```
 
-### 6️⃣ Chainlit UI
-
-```bash
-uv run chainlit run ui/app.py
-```
 
 ---
 
@@ -265,28 +197,10 @@ doc-graph-agent/
 ├── 📁 scripts/
 │   ├── run_qa_eval.py          # 80 QA 측정 자동화
 │   └── make_report_tables.py   # 결과 → 표 5종 생성
-├── 📁 ui/                      # Chainlit UI
 ├── 📁 tests/
 ├── AGENTS.md                   # Codex / Cursor 컨텍스트
 └── CLAUDE.md                   # Claude Code 컨텍스트
 ```
-
----
-
-## 🛣️ 다음 단계 — P1~P6
-
-본 측정으로 진단된 실패 카테고리별 우선순위:
-
-| 우선순위 | 작업 | 영향 QA | 예상 작업량 |
-|:---:|---|:---:|:---:|
-| **P1** 🔥 | Entity 추출 프롬프트 재설계 (Few-shot + 후처리 검증) | 23 + 4 | 1~2일 |
-| **P2** 🔥 | Neo4j 라벨 교정 쿼리 (Company → Metric 재라벨링) | ~40 | 0.5일 |
-| **P3** ⚡ | OCR 정규화 layer (한글 종성 fix table) | 11 | 0.5일 |
-| **P4** 📦 | Layer C 핵심 로직 구현 (Leiden + map-reduce 합성) | 6 + 10 | 2~3일 |
-| **P5** 🔀 | BM25 갈래를 Router에 통합 → Hybrid 완성 | 13 | 2~3일 |
-| **P6** 🌐 | VLM 기반 파싱 파이프라인 (표·차트·레이아웃) | 30+ | 1~2주 |
-
-> 🎯 **재측정 목표**: P1~P5 적용 후 동일 80 QA에서 Faithfulness 5% → **50%+**
 
 ---
 
@@ -304,8 +218,7 @@ doc-graph-agent/
 ![OpenRouter](https://img.shields.io/badge/OpenRouter-Multi--Model-FF6B6B?style=for-the-badge)
 ![BGE-M3](https://img.shields.io/badge/BGE--M3-Embedding-FFD93D?style=for-the-badge)
 
-### UI / Observability
-![Chainlit](https://img.shields.io/badge/Chainlit-2.11-ff69b4?style=for-the-badge)
+### Observability
 ![Opik](https://img.shields.io/badge/Opik-Tracing-262626?style=for-the-badge)
 
 ### Build / Test
@@ -385,32 +298,6 @@ docs(adr): #3 Layer 분리 의사결정 ADR 추가
 📖 전체 글: **[velog.io/@taskerjang](https://velog.io/@taskerjang)**
 
 ---
-
-## 🤝 관련 링크
-
-- 🔗 비교 측정 레포 (VectorRAG): [**doc-summary-agent**](https://github.com/TaskerJang/doc-summary-agent)
-- 📰 멘토링 블로그 시리즈: [**velog.io/@taskerjang**](https://velog.io/@taskerjang)
-- 🎓 SEOCHO Mentoring Program: [GitHub](https://github.com/tteon/seocho)
-- 👨‍🏫 멘토: **정이태 (Hardy)** — [@tteon](https://github.com/tteon)
-
----
-
-## 📖 참고 문헌
-
-- Microsoft GraphRAG (2024) — [From Local to Global](https://arxiv.org/abs/2404.16130)
-- LightRAG (2024) — Dual-level retrieval
-- HybridRAG (Sarmah et al., 2024) — Vector + Graph fusion
-- Neo4j GraphRAG Manifesto — [neo4j.com/blog](https://neo4j.com/blog)
-- FIBO (Financial Industry Business Ontology) — [edmcouncil.org](https://edmcouncil.org)
-
----
-
-<div align="center">
-
-### 💬 한 마디
-
-> *"GraphRAG의 한계를 모르고 적용하는 것보다,*
-> *한계를 알고 적용하는 것이 훨씬 강력하다."*
 
 <br>
 
