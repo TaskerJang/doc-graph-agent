@@ -23,7 +23,11 @@ reasoning 파라미터로 OFF:
 - reasoning: {"max_tokens": 1} — 모든 모델 호환 (공식 권장)
 - reasoning: {"enabled": false} — Anthropic 일부 모델
 
-OpenRouter 경유 시 extra_body 박아 전달. OpenAI 직결 / Kimi 직결은 무시.
+모델별 분기 (doc-summary llm.py 와 정합):
+- OpenAI reasoning 모델 (gpt-5.x / o-series / openai/*): reasoning.effort="minimal"
+  (OpenRouter 경유 → extra_body, OpenAI 직결 → reasoning_effort 파라미터)
+- Kimi / DeepSeek 등 OpenRouter 경유 reasoning 모델: _REASONING_OFF_BODY (extra_body)
+- Kimi 직결 (api.moonshot.cn) 등 그 외는 무시
 """
 
 from __future__ import annotations
@@ -54,6 +58,22 @@ _REASONING_OFF_BODY = {
         "exclude": True,
     },
 }
+
+
+def _is_openai_native_model(model: str) -> bool:
+    """OpenAI 네이티브 reasoning 모델 판단 — OpenRouter 경유 openai/* 포함.
+
+    OpenAI 모델(GPT-5 시리즈 / o-series)은 reasoning 을 effort 로 제어한다
+    (OpenRouter reasoning 문서). Kimi/DeepSeek 용 _REASONING_OFF_BODY
+    (enabled:false + max_tokens:1) 를 OpenAI 모델에 적용하면 동작이 불확실하므로
+    분기하여 effort="minimal" 을 쓴다.
+    """
+    m = model.lower()
+    if m.startswith("gpt-") or m.startswith("o1") or m.startswith("o3") or m.startswith("o4"):
+        return True
+    if m.startswith("openai/"):
+        return True
+    return False
 
 
 @dataclass(frozen=True)
@@ -163,7 +183,7 @@ class LLMClient:
         messages: list[dict[str, str]],
         *,
         temperature: float = 0.0,
-        max_tokens: int = 1024,
+        max_tokens: int = 2048,
         response_format: dict | None = None,
     ) -> str:
         kwargs: dict = {
@@ -175,31 +195,35 @@ class LLMClient:
         if response_format is not None:
             kwargs["response_format"] = response_format
 
-        # OpenRouter 경유 시 reasoning OFF 박기 (공식 문서 패턴)
-        # Kimi K2.5 / DeepSeek V3.2 등 reasoning 모델의 빈 응답 방지
-        # Kimi 직결 (api.moonshot.cn) / OpenAI 직결은 무시
-        if self.config.is_openrouter:
+        # reasoning 토큰 제어 — 모델 종류에 따라 분기 (doc-summary llm.py 와 정합)
+        # - OpenAI reasoning 모델 (gpt-5.x / o-series): reasoning.effort="minimal"
+        #     · OpenRouter 경유 → extra_body 의 reasoning.effort
+        #     · OpenAI 직결 → reasoning_effort 파라미터
+        # - Kimi / DeepSeek 등 OpenRouter 경유 reasoning 모델: _REASONING_OFF_BODY
+        # - Kimi 직결 (api.moonshot.cn) 등은 무시
+        if _is_openai_native_model(self.config.model):
+            if self.config.is_openrouter:
+                kwargs["extra_body"] = {"reasoning": {"effort": "minimal"}}
+            else:
+                kwargs["reasoning_effort"] = "minimal"
+        elif self.config.is_openrouter:
             kwargs["extra_body"] = _REASONING_OFF_BODY
 
         resp = self._client.chat.completions.create(**kwargs)
         msg = resp.choices[0].message
         content = (msg.content or "").strip()
 
-        # 빈 응답 진단 + reasoning_content fallback
-        # OpenRouter reasoning 모델은 content 비어도 reasoning 필드에
-        # 실제 답변이 박혀있을 수 있음
+        # 빈 응답 진단 — reasoning(CoT) 을 답변으로 반환하지 않는다.
+        # reasoning_content/reasoning 을 그대로 돌려주면 평가 prediction 에
+        # 영어 CoT 가 누출되어 judge JSON 파싱이 깨진다 (doc-summary PR #134 와 동일 정책).
+        # 빈 문자열도 judge 파싱 Error 를 유발하므로 '[답변 불가]' 로 정규화.
         if not content:
             finish_reason = resp.choices[0].finish_reason or "?"
-            reasoning_content = getattr(msg, "reasoning_content", None)
-            reasoning = getattr(msg, "reasoning", None)
             logger.warning(
-                "LLM 빈 content (model=%s finish_reason=%s) — fallback 시도",
+                "LLM 빈 content (model=%s finish_reason=%s) — '[답변 불가]' 처리",
                 self.config.model, finish_reason,
             )
-            if reasoning_content and reasoning_content.strip():
-                return reasoning_content
-            if reasoning and reasoning.strip():
-                return reasoning
+            return "[답변 불가]"
 
         return content
 
