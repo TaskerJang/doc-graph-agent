@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Iterator
@@ -21,6 +22,11 @@ from neo4j import Driver, GraphDatabase, Session
 load_dotenv()
 
 logger = logging.getLogger(__name__)
+
+# 쿼리에 LIMIT 절이 이미 있는지 판별. substring " LIMIT " 는 줄바꿈/탭으로 시작하는
+# LIMIT(예: "ORDER BY score DESC\nLIMIT $k")를 놓쳐 자동 부착이 중복되므로
+# word-boundary 정규식으로 잡는다.
+_LIMIT_RE = re.compile(r"\bLIMIT\b", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -98,7 +104,6 @@ class Neo4jClient:
     @classmethod
     def _ensure_limit(cls, query: str) -> str:
         """쿼리에 LIMIT 이 없으면 끝에 부착. 단순 휴리스틱이지만 Spike 충분."""
-        upper = query.upper()
-        if " LIMIT " in upper or upper.rstrip().endswith(";"):
+        if _LIMIT_RE.search(query) or query.rstrip().endswith(";"):
             return query
         return f"{query.rstrip()} LIMIT {cls.DEFAULT_READ_LIMIT}"
