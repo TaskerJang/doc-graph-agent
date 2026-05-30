@@ -13,6 +13,7 @@ import logging
 import os
 from pathlib import Path
 
+import httpx
 from openai import OpenAI
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from openai import RateLimitError, APITimeoutError, APIConnectionError, BadRequestError
@@ -20,10 +21,33 @@ from openai import RateLimitError, APITimeoutError, APIConnectionError, BadReque
 logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL = "gpt-5.2"
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY", ""))
+
+# ── Judge HTTP 타임아웃 / 재시도 정책 ───────────────────────
+# 측정이 첫 문항 judge 호출에서 멈춰(httpx 응답 본문 read 행) KeyboardInterrupt
+# 로 죽는 문제 대응.
+# - connect 10s / read·write·pool 60s 로 무한 대기 방지.
+# - SDK 자체 재시도(기본 2회)를 끄고 tenacity 를 유일한 재시도 주체로 둔다.
+#   안 끄면 SDK 재시도 × tenacity 재시도가 곱해져(최대 6회 × 60s) 수 분간
+#   멈춘 것처럼 보인다. max_retries=0 이면 타임아웃이 곧바로 tenacity 로
+#   전파돼 3회만(지수 백오프 2~8s) 재시도된다.
+_JUDGE_TIMEOUT = httpx.Timeout(60.0, connect=10.0)
+_JUDGE_MAX_RETRIES = 0
+
+
+def _make_judge_client(api_key: str, base_url: str | None = None) -> OpenAI:
+    """타임아웃·재시도 정책이 박힌 judge 전용 OpenAI 클라이언트 생성."""
+    return OpenAI(
+        api_key=api_key,
+        base_url=base_url,
+        timeout=_JUDGE_TIMEOUT,
+        max_retries=_JUDGE_MAX_RETRIES,
+    )
+
+
+client = _make_judge_client(os.getenv("OPENAI_API_KEY", ""))
 MODEL = DEFAULT_MODEL
 
-_active_judge_client: OpenAI = OpenAI(api_key=os.getenv("OPENAI_API_KEY", ""))
+_active_judge_client: OpenAI = _make_judge_client(os.getenv("OPENAI_API_KEY", ""))
 _active_judge_model: str = DEFAULT_MODEL
 _judge_strict_schema_supported: bool = True
 _use_openrouter_extras: bool = False
@@ -55,7 +79,7 @@ def configure_judge_llm(
     api_key = os.getenv(api_key_env)
     if not api_key:
         raise RuntimeError(f"환경변수 {api_key_env} 미설정 — Judge LLM 재설정 불가")
-    _active_judge_client = OpenAI(api_key=api_key, base_url=base_url)
+    _active_judge_client = _make_judge_client(api_key, base_url)
     if model is not None:
         _active_judge_model = model
     _judge_strict_schema_supported = (base_url is None)
@@ -102,7 +126,7 @@ def _call_api(prompt: str, response_format: dict) -> dict:
         "messages": [{"role": "user", "content": prompt}],
         "max_completion_tokens": 2000,
         "response_format": rf,
-        "timeout": 60,  # 30 → 60s (reasoning 모델 대응)
+        "timeout": _JUDGE_TIMEOUT,  # connect 10s / read 60s — 무한 대기 방지
     }
 
     # Model-specific 분기:
