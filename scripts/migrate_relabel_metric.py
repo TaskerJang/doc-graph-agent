@@ -15,9 +15,10 @@
 - 대상 선택: --group-ids 명시 리스트(정밀) 또는 이름 휴리스틱(_looks_like_metric).
 
 진단 모드 (모두 read-only):
-- --docs       : 그래프에 적재된 Document 목록 (QA 대상 문서가 들어있는지)
-- --label-dist : entity_type 분포 (노이즈 규모)
-- --find STR   : 이름에 STR 포함된 Entity 를 라벨 무관 검색 (두산밥캣 존재/라벨)
+- --docs          : 그래프에 적재된 Document 목록 (QA 대상 문서가 들어있는지)
+- --label-dist    : entity_type 분포 (노이즈 규모)
+- --find STR      : 이름에 STR 포함된 Entity 를 라벨 무관 검색 (두산밥캣 존재/라벨)
+- --chunk-find STR: 청크 텍스트에 STR 포함 검색 (파싱 vs 추출 프롬프트 판별)
 
 검증: 교정 후 #61 동일 80 QA 재측정 → before/after.
 
@@ -25,6 +26,7 @@
     uv run python scripts/migrate_relabel_metric.py --diagnose
     uv run python scripts/migrate_relabel_metric.py --docs
     uv run python scripts/migrate_relabel_metric.py --find 두산
+    uv run python scripts/migrate_relabel_metric.py --chunk-find 두산
     uv run python scripts/migrate_relabel_metric.py                       # dry-run (휴리스틱)
     uv run python scripts/migrate_relabel_metric.py --group-ids g1,g2     # dry-run (명시)
     uv run python scripts/migrate_relabel_metric.py --group-ids g1,g2 --apply
@@ -110,6 +112,13 @@ RETURN labels(e) AS labels, e.name AS name, e.entity_type AS type
 ORDER BY name LIMIT 1000
 """.strip()
 
+_CHUNK_FIND = """
+MATCH (c:Chunk)
+WHERE c.text CONTAINS $q
+RETURN c.id AS id, substring(c.text, 0, 240) AS preview
+ORDER BY id LIMIT 20
+""".strip()
+
 
 def _fetch_companies(client: Neo4jClient) -> list[dict]:
     return client.read(_DIAGNOSE)
@@ -153,6 +162,18 @@ def find_entity(client: Neo4jClient, q: str) -> None:
         logger.info("  %-30s labels=%s type=%s", r.get("name"), r.get("labels"), r.get("type"))
 
 
+def chunk_find(client: Neo4jClient, q: str) -> None:
+    """청크 텍스트에 q 가 들어있나 — 파싱(B1) vs 추출프롬프트(B2) 판별.
+
+    청크에 q 가 멀쩡히 있는데 Entity 가 없으면 → 추출 프롬프트 문제 (P1).
+    청크에도 q 가 없거나 깨져 있으면 → 파싱/OCR 문제 (VLM, P3).
+    """
+    rows = client.read(_CHUNK_FIND, q=q)
+    logger.info("== 텍스트에 '%s' 포함 Chunk %d개 ==", q, len(rows))
+    for r in rows:
+        logger.info("  [%s] %s", r.get("id"), r.get("preview"))
+
+
 def select_targets(client: Neo4jClient, explicit: list[str] | None) -> list[dict]:
     rows = _fetch_companies(client)
     if explicit:
@@ -171,6 +192,8 @@ def main() -> None:
                     help="Entity 타입 분포 출력 후 종료 (변경 없음)")
     ap.add_argument("--find", default="",
                     help="이름에 문자열 포함된 Entity 를 라벨 무관 검색 후 종료")
+    ap.add_argument("--chunk-find", default="",
+                    help="청크 텍스트에 문자열 포함된 Chunk 검색 후 종료 (파싱 vs 추출 판별)")
     ap.add_argument("--group-ids", default="",
                     help="교정 대상 group_id 콤마구분 (명시 선택). 미지정 시 이름 휴리스틱")
     ap.add_argument("--apply", action="store_true",
@@ -188,6 +211,9 @@ def main() -> None:
             return
         if args.find:
             find_entity(client, args.find)
+            return
+        if args.chunk_find:
+            chunk_find(client, args.chunk_find)
             return
         if args.diagnose:
             diagnose(client)
