@@ -28,6 +28,12 @@ from __future__ import annotations
 import argparse
 import logging
 import re
+import sys
+from pathlib import Path
+
+# repo 루트를 path 에 추가 — `uv run python scripts/...` 로 직접 실행 시에도
+# kg 패키지를 import 할 수 있게 한다 (run_qa_eval.py 와 동일 패턴).
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from kg.neo4j_client import Neo4jClient
 
