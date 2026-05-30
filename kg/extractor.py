@@ -67,8 +67,10 @@ MAX_CONCURRENT = 8
 # Entity 추출은 정밀 작업 — 회사 레포(0.3) 보다 한 단계 더 결정적으로.
 TEMPERATURE = 0.2
 
-# 청크 1개당 응답 상한 — Layer B 5타입 × 평균 4~5개 + relations 여유.
-MAX_TOKENS_PER_CHUNK = 1500
+# 청크 1개당 응답 상한. 수치가 빽빽한 금융 청크는 Entity + source_span 이 길어
+# 1500 으로는 JSON 이 잘리고(→ 파싱 실패 → 빈 결과 조용히 drop) 추출이 0건이 되는
+# 사례 확인 (P1 #56, 두산밥캣 리포트). chat() 기본값(2048)보다 넉넉히 4000 으로 상향.
+MAX_TOKENS_PER_CHUNK = 4000
 
 # 프롬프트 경로 (회사 레포의 PROMPTS_DIR 패턴 차용)
 PROMPTS_DIR              = Path(__file__).parent / "prompts"
@@ -315,6 +317,17 @@ async def _extract_chunk(
 
     elapsed = time.perf_counter() - started
 
+    # llm_client 가 빈 content(또는 CoT 누출)를 '[답변 불가]' 로 정규화해 돌려준다.
+    # 이는 정상적인 '추출할 Entity 없음'(valid empty JSON)과 다른 '하드 실패'이므로
+    # 조용한 빈 결과로 묻지 말고 ERROR 로 드러낸다 (P1 #56 — 깨진 그래프 가시화).
+    if raw.strip() == "[답변 불가]":
+        logger.error(
+            "추출 빈 응답 (doc=%s chunk=%s section=%s) — 토큰 부족/CoT 누출 의심. "
+            "0건 처리. MAX_TOKENS_PER_CHUNK/모델 점검 필요.",
+            doc_id, chunk_id or "(no-id)", section,
+        )
+        return ExtractionResult()
+
     try:
         data = _parse_extraction_json(raw)
     except (json.JSONDecodeError, ValueError) as exc:
@@ -392,4 +405,10 @@ async def extract(
         "fail=%d  (%.2fs)",
         len(chunks), len(merged.entities), len(merged.relations), failed, elapsed,
     )
+    if chunks and failed / len(chunks) >= 0.3:
+        logger.warning(
+            "추출 실패/빈결과율 %.0f%% (%d/%d 청크) — 그래프가 불완전할 수 있음. "
+            "토큰·모델·파싱 점검 후 재인제스트 권장 (P1 #56).",
+            100 * failed / len(chunks), failed, len(chunks),
+        )
     return merged
