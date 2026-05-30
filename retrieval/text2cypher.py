@@ -74,7 +74,7 @@ MAX_RESULT_ROWS_FOR_ANSWER = 30
 # 프롬프트 경로 (extractor 와 동일 패턴)
 PROMPTS_DIR = Path(__file__).parent / "prompts"
 SYSTEM_PROMPT_PATH = PROMPTS_DIR / "text2cypher_system_v1.md"
-ANSWER_PROMPT_PATH = PROMPTS_DIR / "text2cypher_answer_v1.md"
+ANSWER_PROMPT_PATH = PROMPTS_DIR / "text2cypher_answer_v2.md"
 
 # read-only 강제 — 본 모듈의 핵심 안전장치.
 # Neo4jClient.read 도 강제하지만 본 모듈 단계에서 더 빨리 차단하는 게 좋음
