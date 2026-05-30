@@ -74,8 +74,8 @@ MAX_TOKENS_PER_CHUNK = 4000
 
 # 프롬프트 경로 (회사 레포의 PROMPTS_DIR 패턴 차용)
 PROMPTS_DIR              = Path(__file__).parent / "prompts"
-SYSTEM_PROMPT_PATH       = PROMPTS_DIR / "entity_system_v1.md"
-EXTRACT_PROMPT_PATH      = PROMPTS_DIR / "entity_extract_v1.md"
+SYSTEM_PROMPT_PATH       = PROMPTS_DIR / "entity_system_v2.md"
+EXTRACT_PROMPT_PATH      = PROMPTS_DIR / "entity_extract_v2.md"
 
 # local_id global prefix 구분자.
 # `{chunk_id}__{local_id}` 의 `__` — '_' 단일은 chunk_id 안에 흔히 등장 (예:
