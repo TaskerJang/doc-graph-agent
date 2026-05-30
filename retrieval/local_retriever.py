@@ -50,6 +50,8 @@ import json
 import logging
 import re
 import time
+
+import numpy as np
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -62,6 +64,7 @@ from tenacity import (
 )
 
 from agent.llm_client import LLMClient
+from kg.linking import DEFAULT_EMBED_MODEL, embed_texts
 from kg.neo4j_client import Neo4jClient
 from observability.tracing import track
 
@@ -75,10 +78,11 @@ MAX_TOKENS_IDENTIFY = 400
 MAX_TOKENS_ANSWER = 700
 
 # Subgraph 크기 제한 (토큰 폭발 방지)
-MAX_ENTITIES_TO_EXPAND = 5      # 식별 entity 중 top N 만 expand
-MAX_RELATED_PER_ENTITY = 15     # entity 당 이웃 노드 상한
-MAX_CHUNKS_PER_ENTITY = 3       # entity 당 인용 청크 상한 (raw text)
-CHUNK_TEXT_TRUNCATE = 300       # 청크 1개당 char 상한 (LLM 컨텍스트 절약)
+MAX_ENTITIES_TO_EXPAND = 5         # 식별 entity 중 top N 만 expand
+MAX_RELATED_PER_ENTITY = 15        # entity 당 이웃 노드 상한
+MAX_CHUNKS_PER_ENTITY = 3          # entity 당 인용 청크 상한 (rerank 후 채택)
+CHUNK_CANDIDATES_PER_ENTITY = 12   # entity 당 청크 후보 상한 (rerank 전 retrieve)
+CHUNK_TEXT_TRUNCATE = 600          # 채택 청크 1개당 char 상한 (LLM 컨텍스트용)
 
 # 프롬프트 경로
 PROMPTS_DIR = Path(__file__).parent / "prompts"
@@ -300,21 +304,22 @@ WITH e, relations, collect(DISTINCT {
         co_name: co.name,
         co_labels: labels(co)
      })[..$max_related] AS co_mentions
-// entity 가 등장한 chunk 원문 (max_chunks 개만).
+// entity 가 등장한 chunk 후보 (rerank 전 — 넉넉히, 원문 그대로).
 // 일부 청크는 page property 가 없을 수 있어 (5/17 발견 — 청크 메타데이터
 // 누락 케이스) properties(c2).page 로 안전 접근 (없으면 null).
+// 질문 관련성 랭킹은 Python _rank_chunks_by_question 에서 (bge-m3 cosine).
 OPTIONAL MATCH (e)<-[:MENTIONS]-(c2:Chunk)
 WITH e, relations, co_mentions, collect(DISTINCT {
         chunk_id: c2.id,
-        text: substring(c2.text, 0, $chunk_truncate),
+        text: c2.text,
         page: properties(c2).page
-     })[..$max_chunks] AS chunks
+     })[..$max_chunk_candidates] AS chunk_candidates
 RETURN e.name AS name,
        labels(e) AS labels,
        coalesce(e.member_count, 1) AS member_count,
        relations,
        co_mentions,
-       chunks
+       chunk_candidates
 """
 
 
@@ -326,7 +331,7 @@ def _expand_subgraph(
     각 entity 별:
     - Layer B 관계 이웃 (FACES_RISK / HAS_METRIC / HAS_OUTLOOK / RECOMMENDED_FOR)
     - co-mention entity (같은 청크에 함께 등장)
-    - entity 가 등장한 청크 원문 (top N, 토큰 절약 위해 truncate)
+    - entity 가 등장한 청크 후보 (rerank 전, top N — Python 에서 질문 관련성 재랭킹)
 
     토큰 폭발 방지를 위해 모든 collection 에 [..N] slice 적용.
     """
@@ -339,8 +344,7 @@ def _expand_subgraph(
             _EXPAND_SUBGRAPH_CYPHER,
             ids=ids_to_expand,
             max_related=MAX_RELATED_PER_ENTITY,
-            max_chunks=MAX_CHUNKS_PER_ENTITY,
-            chunk_truncate=CHUNK_TEXT_TRUNCATE,
+            max_chunk_candidates=CHUNK_CANDIDATES_PER_ENTITY,
         )
     except Exception as exc:
         logger.warning("Subgraph 확장 Cypher 실패: %s", exc)
@@ -349,6 +353,77 @@ def _expand_subgraph(
 
 
 # ── 4단계: subgraph → LLM 컨텍스트 → 답변 ────────────────────
+def _rank_chunks_by_question(
+    question: str,
+    subgraph: list[dict[str, Any]],
+    *,
+    top_k: int = MAX_CHUNKS_PER_ENTITY,
+    truncate: int = CHUNK_TEXT_TRUNCATE,
+    model_name: str = DEFAULT_EMBED_MODEL,
+) -> list[dict[str, Any]]:
+    """entity 별 chunk_candidates 를 질문 관련성(bge-m3 cosine)으로 재랭킹.
+
+    retrieve-then-rerank: Cypher 가 넉넉히(CHUNK_CANDIDATES_PER_ENTITY) 후보를
+    주면 여기서 질문과의 cosine 으로 entity 당 top_k 만 채택 + LLM 용 절단.
+    payload 모양(entry["chunks"] = [{chunk_id, text, page}, ...])은 기존과 동일 —
+    답변 프롬프트 변경 없이 측정 델타가 '청크 선택' 효과로만 귀속된다.
+
+    근거:
+    - Sentence-Transformers Retrieve & Re-Rank — 1차로 넉넉히, 2차로 정밀 랭킹 후 소수 채택.
+    - MS GraphRAG Local Search — candidate text units 를 ranking + filtering 으로 prioritize.
+    bge-m3 (`embed_texts`) 는 L2 정규화라 dot = cosine. 모델은 lru_cache 로 warm.
+
+    임베딩 실패 시 후보 앞쪽 top_k 로 graceful (기존 동작과 유사).
+    제자리(in-place)로 entry["chunks"] 를 채우고 같은 리스트를 반환한다.
+    """
+    # 1) 후보 텍스트 수집 (chunk_id 기준 dedup — 공유 청크 중복 임베딩 방지)
+    cand_text: dict[str, str] = {}
+    for entry in subgraph:
+        for c in entry.get("chunk_candidates") or []:
+            cid, txt = c.get("chunk_id"), c.get("text")
+            if cid and txt and cid not in cand_text:
+                cand_text[cid] = txt
+
+    def _pick(cands: list[dict[str, Any]], scored: dict[str, float]) -> list[dict[str, Any]]:
+        ranked = sorted(
+            (c for c in cands if c.get("chunk_id")),
+            key=lambda c: scored.get(c["chunk_id"], -1.0),
+            reverse=True,
+        )[:top_k]
+        return [
+            {
+                "chunk_id": c["chunk_id"],
+                "text": (c.get("text") or "")[:truncate],
+                "page": c.get("page"),
+            }
+            for c in ranked
+        ]
+
+    if not cand_text:
+        for entry in subgraph:
+            entry["chunks"] = []
+        return subgraph
+
+    ids = list(cand_text)
+    score: dict[str, float] = {}
+    try:
+        # 질문 + 후보를 한 번에 임베딩 (encode 1회)
+        vecs = embed_texts([question] + [cand_text[i] for i in ids], model_name=model_name)
+        q_vec, cand_mat = vecs[0], vecs[1:]
+        sims = cand_mat @ q_vec  # (M,) — 둘 다 L2 normalized → cosine
+        score = {cid: float(s) for cid, s in zip(ids, sims)}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("청크 랭킹 임베딩 실패 — 후보 앞쪽 채택으로 fallback: %s", exc)
+
+    for entry in subgraph:
+        picked = _pick(entry.get("chunk_candidates") or [], score)
+        entry["chunks"] = picked
+        if score and picked:
+            top = max(score.get(p["chunk_id"], 0.0) for p in picked)
+            logger.debug("청크 랭킹 entity=%s top_cos=%.3f", entry.get("name"), top)
+    return subgraph
+
+
 def _format_context(subgraph: list[dict[str, Any]]) -> dict[str, Any]:
     """LLM 답변 생성기에 전달할 컨텍스트 구조화.
 
@@ -514,6 +589,9 @@ def local_retrieve(
         # 3단계: Subgraph 확장
         matched_ids = list({m["id"] for m in matched})  # 중복 제거
         subgraph = _expand_subgraph(neo4j, matched_ids)
+
+        # 3.5단계: 질문 관련성으로 청크 재랭킹 (retrieve-then-rerank)
+        subgraph = _rank_chunks_by_question(question, subgraph)
 
         # 4단계: 컨텍스트 포맷 + 답변 생성
         context = _format_context(subgraph)
