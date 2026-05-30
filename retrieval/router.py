@@ -117,21 +117,17 @@ LOCAL_KEYWORDS: tuple[str, ...] = (
 # Community Summary 신호 — 글로벌 / 트렌드 / 전체 요약
 COMMUNITY_KEYWORDS: tuple[str, ...] = (
     "트렌드",
-    "전체",
     "흐름",
     "주요 트렌드",
     "주제",
     "패턴",
     "주요 흐름",
-    "전반",
     "글로벌",
     "community",
     "communities",
     "topic",
     "topics",
     "themes",
-    "전체적",
-    "통합",
     "사전체",
 )
 
