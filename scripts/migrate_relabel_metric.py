@@ -14,10 +14,17 @@
   어떤 게 지표인지, 두산밥캣 같은 실제 회사가 노드로 존재하는지 확인).
 - 대상 선택: --group-ids 명시 리스트(정밀) 또는 이름 휴리스틱(_looks_like_metric).
 
+진단 모드 (모두 read-only):
+- --docs       : 그래프에 적재된 Document 목록 (QA 대상 문서가 들어있는지)
+- --label-dist : entity_type 분포 (노이즈 규모)
+- --find STR   : 이름에 STR 포함된 Entity 를 라벨 무관 검색 (두산밥캣 존재/라벨)
+
 검증: 교정 후 #61 동일 80 QA 재측정 → before/after.
 
 사용:
     uv run python scripts/migrate_relabel_metric.py --diagnose
+    uv run python scripts/migrate_relabel_metric.py --docs
+    uv run python scripts/migrate_relabel_metric.py --find 두산
     uv run python scripts/migrate_relabel_metric.py                       # dry-run (휴리스틱)
     uv run python scripts/migrate_relabel_metric.py --group-ids g1,g2     # dry-run (명시)
     uv run python scripts/migrate_relabel_metric.py --group-ids g1,g2 --apply
@@ -83,6 +90,26 @@ SET e:Metric,
 RETURN e.group_id AS group_id, e.name AS name
 """.strip()
 
+# ── 진단용 (변경 없음, read-only) ─────────────────────────
+_DOCS = """
+MATCH (d:Document)
+RETURN d.filename AS doc, d.fiscal_year AS fiscal_year
+ORDER BY doc LIMIT 1000
+""".strip()
+
+_LABEL_DIST = """
+MATCH (e:Entity)
+RETURN e.entity_type AS type, count(*) AS n
+ORDER BY n DESC LIMIT 1000
+""".strip()
+
+_FIND = """
+MATCH (e:Entity)
+WHERE e.name CONTAINS $q
+RETURN labels(e) AS labels, e.name AS name, e.entity_type AS type
+ORDER BY name LIMIT 1000
+""".strip()
+
 
 def _fetch_companies(client: Neo4jClient) -> list[dict]:
     return client.read(_DIAGNOSE)
@@ -102,6 +129,30 @@ def diagnose(client: Neo4jClient) -> None:
     logger.info("group_id 목록(의심): %s", ",".join(r["group_id"] for r in suspects))
 
 
+def list_docs(client: Neo4jClient) -> None:
+    """그래프에 실제 적재된 Document 목록 — QA 대상 문서가 들어있는지 확인."""
+    rows = client.read(_DOCS)
+    logger.info("== 그래프 적재 Document %d개 ==", len(rows))
+    for r in rows:
+        logger.info("  %-50s fy=%s", r.get("doc"), r.get("fiscal_year"))
+
+
+def label_dist(client: Neo4jClient) -> None:
+    """entity_type 분포 — 노이즈 규모 파악."""
+    rows = client.read(_LABEL_DIST)
+    logger.info("== Entity 타입 분포 ==")
+    for r in rows:
+        logger.info("  %-16s %s", r.get("type"), r.get("n"))
+
+
+def find_entity(client: Neo4jClient, q: str) -> None:
+    """이름에 q 가 포함된 Entity 를 라벨 무관하게 검색 (두산밥캣 존재/라벨 확인)."""
+    rows = client.read(_FIND, q=q)
+    logger.info("== '%s' 포함 Entity %d개 ==", q, len(rows))
+    for r in rows:
+        logger.info("  %-30s labels=%s type=%s", r.get("name"), r.get("labels"), r.get("type"))
+
+
 def select_targets(client: Neo4jClient, explicit: list[str] | None) -> list[dict]:
     rows = _fetch_companies(client)
     if explicit:
@@ -114,6 +165,12 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="P2 #57 — Company->Metric 라벨 교정")
     ap.add_argument("--diagnose", action="store_true",
                     help="전체 :Company 노드 출력 후 종료 (변경 없음)")
+    ap.add_argument("--docs", action="store_true",
+                    help="그래프 적재 Document 목록 출력 후 종료 (변경 없음)")
+    ap.add_argument("--label-dist", action="store_true",
+                    help="Entity 타입 분포 출력 후 종료 (변경 없음)")
+    ap.add_argument("--find", default="",
+                    help="이름에 문자열 포함된 Entity 를 라벨 무관 검색 후 종료")
     ap.add_argument("--group-ids", default="",
                     help="교정 대상 group_id 콤마구분 (명시 선택). 미지정 시 이름 휴리스틱")
     ap.add_argument("--apply", action="store_true",
@@ -123,6 +180,15 @@ def main() -> None:
     explicit = [g.strip() for g in args.group_ids.split(",") if g.strip()] or None
 
     with Neo4jClient() as client:
+        if args.docs:
+            list_docs(client)
+            return
+        if args.label_dist:
+            label_dist(client)
+            return
+        if args.find:
+            find_entity(client, args.find)
+            return
         if args.diagnose:
             diagnose(client)
             return
