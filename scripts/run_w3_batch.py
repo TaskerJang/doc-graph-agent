@@ -148,7 +148,8 @@ async def _process_one(
         # 3. Linking — bge-m3 NED
         if ext_result.entities:
             t0 = time.perf_counter()
-            link_result = link_entities(ext_result.entities)
+            # namespace=document.id — group_id 전역 유일성 (문서 간 grp_NNN 충돌 방지)
+            link_result = link_entities(ext_result.entities, namespace=document.id)
             stat.sec_linking = time.perf_counter() - t0
             stat.entities_grouped = link_result.grouped_count
         else:

@@ -80,7 +80,7 @@ class EntityGroup(BaseModel):
     `representative_name` 으로 (한글 우선 + 최장 source_span).
     """
 
-    group_id:            str                      = Field(..., description="전역적 식별자. 예: 'grp_001'")
+    group_id:            str                      = Field(..., description="전역적 식별자. 예: 'grp_001' 또는 '{doc_id}__grp_001'")
     type:                EntityType
     representative_name: str                      = Field(..., description="그룹 대표 이름 (한글 우선, 최장 source_span)")
     members:             list[ExtractedEntity]    = Field(default_factory=list)
@@ -231,6 +231,7 @@ def link_entities(
     threshold: float = DEFAULT_THRESHOLD,
     model_name: str = DEFAULT_EMBED_MODEL,
     embeddings: np.ndarray | None = None,
+    namespace: str = "",
 ) -> LinkingResult:
     """청크 간 동일 Entity 를 그룹화.
 
@@ -244,6 +245,9 @@ def link_entities(
         threshold: cosine 이상이면 같은 그룹. 기본 0.92.
         model_name: bge-m3 외 다른 모델 테스트용.
         embeddings: (N, D) 미리 계산된 임베딩. None 이면 내부에서 계산.
+        namespace: group_id prefix (보통 doc_id). 문서별로 link_entities 를
+                   따로 호출할 때 grp_NNN 이 전역 유일하도록 — 미지정 시 'grp_001'
+                   (단일 호출/sanity 호환).
 
     Returns:
         LinkingResult — 그룹 리스트 + 통계.
@@ -271,11 +275,16 @@ def link_entities(
     # 3. Group
     builders = _build_groups(ents, embeddings, threshold)
 
+    # group_id 전역 유일성 (#17 의 local_id 충돌과 동종 문제): 문서마다
+    # link_entities 가 호출되며 grp_001 부터 재시작 → build 시 group_id MERGE 가
+    # 서로 다른 문서의 무관한 엔티티를 한 노드로 병합(멀티라벨·노드 붕괴)했음.
+    # namespace(보통 doc_id)를 prefix 해 충돌 차단.
+    gid_prefix = f"{namespace}__" if namespace else ""
     groups: list[EntityGroup] = []
     for idx, b in enumerate(builders):
         groups.append(
             EntityGroup(
-                group_id=f"grp_{idx + 1:03d}",
+                group_id=f"{gid_prefix}grp_{idx + 1:03d}",
                 type=b.type,
                 representative_name=b.representative_name(),
                 members=list(b.members),
