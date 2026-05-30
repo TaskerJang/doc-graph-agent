@@ -110,8 +110,12 @@ def _sanitize_query(question: str) -> str:
 # ── BM25 fulltext 검색 ───────────────────────────────────────
 # db.index.fulltext.queryNodes — Lucene 스코어(BM25) 내림차순. 인덱스 부재 시
 # Cypher 예외 → 호출부에서 graceful 처리.
+#
+# 주의: Lucene 검색 문자열 파라미터를 $query 로 두면 Neo4jClient.read(self, query,
+# **params) 의 첫 위치인자 `query` 와 이름이 겹쳐 TypeError 가 난다. 그래서
+# $search_text 로 명명한다.
 _BM25_CYPHER = """
-CALL db.index.fulltext.queryNodes($index_name, $query) YIELD node, score
+CALL db.index.fulltext.queryNodes($index_name, $search_text) YIELD node, score
 RETURN node.id AS chunk_id,
        node.text AS text,
        properties(node).page AS page,
@@ -135,7 +139,7 @@ def _bm25_chunks(
         return [], "빈 질문입니다."
     try:
         rows = neo4j.read(
-            _BM25_CYPHER, index_name=FULLTEXT_INDEX, query=q, top_k=top_k
+            _BM25_CYPHER, index_name=FULLTEXT_INDEX, search_text=q, top_k=top_k
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("BM25 fulltext 검색 실패 (인덱스 미생성 가능): %s", exc)
