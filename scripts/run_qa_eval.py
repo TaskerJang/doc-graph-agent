@@ -21,6 +21,14 @@ doc-summary-agent 의 eval/run_eval.py 와 동일한 패턴 + Tier 2 메트릭 4
 doc-graph 의 retrieval.route_and_answer() — Text2Cypher / Local / Community
 자동 라우팅.
 
+## 데이터셋 (단일 소스)
+
+단일 소스 `eval/dataset/qa_pairs.json` 하나만 읽고, 각 항목의 `qa_set`
+필드("vectorrag"/"graphrag")로 분리한다. 분리 파일(vectorrag_qa.json /
+graphrag_qa.json)을 수동으로 쪼개던 방식은 합본과 분리본이 어긋나
+(예: 글자 손상) 측정이 오염되는 문제가 있어 폐지했다.
+결과는 qa_set 별로 분리 집계된다(print_summary 2개 섹션 + 결과 JSON의 qa_set).
+
 ## 사용
 
     # 전체 80 QA (VectorRAG 40 + GraphRAG 40) 측정
@@ -82,33 +90,52 @@ logger = logging.getLogger(__name__)
 
 ROOT             = Path(__file__).parent.parent
 DATASET_DIR      = ROOT / "eval" / "dataset"
-VECTORRAG_PATH   = DATASET_DIR / "vectorrag_qa.json"
-GRAPHRAG_PATH    = DATASET_DIR / "graphrag_qa.json"
+QA_PATH          = DATASET_DIR / "qa_pairs.json"   # 단일 소스 (vectorrag + graphrag 합본)
 RESULT_DIR       = ROOT / "eval" / "results"
 RESULT_DIR.mkdir(parents=True, exist_ok=True)
 
 
+def _infer_qa_set(item: dict) -> str:
+    """qa_set 필드 누락 시 추론 — graphrag QA 만 pattern/expected_route 를 가진다."""
+    if item.get("pattern") or item.get("expected_route"):
+        return "graphrag"
+    return "vectorrag"
+
+
 def _load_qa(qa_set: str) -> list[dict]:
-    qa_pairs: list[dict] = []
-    if qa_set in ("vectorrag", "both"):
-        if VECTORRAG_PATH.exists():
-            v = json.loads(VECTORRAG_PATH.read_text(encoding="utf-8"))
-            for item in v:
-                item.setdefault("qa_set", "vectorrag")
-            qa_pairs.extend(v)
-            logger.info("VectorRAG QA 로드: %d", len(v))
-        else:
-            logger.warning("VectorRAG QA 파일 없음: %s", VECTORRAG_PATH)
-    if qa_set in ("graphrag", "both"):
-        if GRAPHRAG_PATH.exists():
-            g = json.loads(GRAPHRAG_PATH.read_text(encoding="utf-8"))
-            for item in g:
-                item.setdefault("qa_set", "graphrag")
-            qa_pairs.extend(g)
-            logger.info("GraphRAG QA 로드: %d", len(g))
-        else:
-            logger.warning("GraphRAG QA 파일 없음: %s", GRAPHRAG_PATH)
-    return qa_pairs
+    """단일 데이터셋(qa_pairs.json)을 읽어 qa_set 으로 필터링.
+
+    수동으로 분리한 vectorrag_qa.json / graphrag_qa.json 을 읽던 방식은
+    합본과 분리본이 어긋나(글자 손상 등) 측정이 오염되는 문제가 있었다.
+    이제 단일 소스만 읽고, 각 항목의 qa_set 필드로 분리한다. 결과 집계는
+    기존대로 qa_set 별로 분리되어 나온다(print_summary / 결과 JSON).
+
+    Args:
+        qa_set: "vectorrag" | "graphrag" | "both"
+    """
+    if not QA_PATH.exists():
+        logger.error("QA 데이터셋 파일 없음: %s", QA_PATH)
+        return []
+
+    all_qa = json.loads(QA_PATH.read_text(encoding="utf-8"))
+
+    # qa_set 필드 보정 — 누락 시 추론
+    for item in all_qa:
+        if not item.get("qa_set"):
+            item["qa_set"] = _infer_qa_set(item)
+
+    if qa_set == "both":
+        selected = all_qa
+    else:
+        selected = [q for q in all_qa if q.get("qa_set") == qa_set]
+
+    n_vec = sum(1 for q in selected if q.get("qa_set") == "vectorrag")
+    n_gr  = sum(1 for q in selected if q.get("qa_set") == "graphrag")
+    logger.info("QA 로드: %s (qa_set=%s) — vectorrag=%d, graphrag=%d, total=%d",
+                QA_PATH.name, qa_set, n_vec, n_gr, len(selected))
+    if not selected:
+        logger.warning("선택된 QA 0개 — qa_set=%s 항목이 %s 에 있는지 확인", qa_set, QA_PATH.name)
+    return selected
 
 
 def evaluate_one(qa: dict, use_semantic: bool = True) -> dict:
