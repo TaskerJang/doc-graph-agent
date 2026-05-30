@@ -83,7 +83,7 @@ CHUNK_TEXT_TRUNCATE = 300       # 청크 1개당 char 상한 (LLM 컨텍스트 �
 # 프롬프트 경로
 PROMPTS_DIR = Path(__file__).parent / "prompts"
 ENTITY_PROMPT_PATH = PROMPTS_DIR / "local_retriever_entity_v1.md"
-ANSWER_PROMPT_PATH = PROMPTS_DIR / "local_retriever_answer_v2.md"
+ANSWER_PROMPT_PATH = PROMPTS_DIR / "local_retriever_answer_v1.md"
 
 # 지원 entity 라벨 (스키마 §3 — extractor 와 일치)
 SUPPORTED_LABELS = ("Company", "Risk", "Metric", "Outlook", "Recommendation")
