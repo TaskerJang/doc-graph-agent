@@ -35,6 +35,7 @@ import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from agent.llm_client import configure_llm
 from ingestion.adapter import parse_document
 from ingestion.models import ChunkType, Document
 from kg.builder import build_layer_a, build_layer_b, link_chunks_to_entities
@@ -218,7 +219,24 @@ async def main() -> int:
         "--docs-dir", type=Path, default=DOCS_DIR,
         help="문서 디렉토리. 기본: eval/dataset/documents/",
     )
+    # 추출 LLM 토글 (#56 P1 재인제스트) — run_qa_eval.py 와 동일 패턴.
+    # 미지정 시 KIMI_* 기본. configure_llm() 이 전역 _active_config 를 세팅하므로
+    # 이후 모든 LLMClient()(extractor 포함)가 이 모델을 사용.
+    parser.add_argument("--llm-model", type=str, default=None,
+                        help="추출 모델 ID (예: openai/gpt-5.2). 미지정 시 KIMI_*")
+    parser.add_argument("--llm-base-url", type=str, default=None,
+                        help="OpenAI 호환 endpoint (예: https://openrouter.ai/api/v1)")
+    parser.add_argument("--llm-api-key-env", type=str, default="KIMI_API_KEY",
+                        help="API 키 환경변수명 (예: OPENROUTER_API_KEY)")
     args = parser.parse_args()
+
+    if args.llm_model or args.llm_base_url or args.llm_api_key_env != "KIMI_API_KEY":
+        configure_llm(
+            model=args.llm_model,
+            base_url=args.llm_base_url,
+            api_key_env=args.llm_api_key_env,
+        )
+        logger.info("추출 LLM 설정: model=%s base_url=%s", args.llm_model, args.llm_base_url)
 
     if not args.docs_dir.exists():
         logger.error("문서 디렉토리 없음: %s", args.docs_dir)
