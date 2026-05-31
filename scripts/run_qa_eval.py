@@ -137,6 +137,25 @@ def _load_qa(qa_set: str) -> list[dict]:
         logger.warning("선택된 QA 0개 — qa_set=%s 항목이 %s 에 있는지 확인", qa_set, QA_PATH.name)
     return selected
 
+def _extract_retrieved_context(result) -> str:
+    """RoutedResult에서 답변 생성에 쓰인 retrieved context 직렬화 (faithfulness judge용).
+
+    E1: faithfulness를 gold(reference)가 아니라 *실제 검색된 컨텍스트*에 대조하기 위함.
+    route별로 컨텍스트 위치가 달라 분기. community(stub)는 "" → faithfulness N/A.
+    """
+    if result is None:
+        return ""
+    if result.bm25_result is not None:
+        return "\n\n".join((c.get("text") or "")
+                           for c in result.bm25_result.retrieved_chunks).strip()
+    if result.local_result is not None:
+        return (result.local_result.retrieved_context or "").strip()
+    if result.t2c_result is not None:
+        return json.dumps(
+            {"cypher": result.t2c_result.cypher, "rows": result.t2c_result.result},
+            ensure_ascii=False,
+        )
+    return ""  # community stub 등 — 컨텍스트 없음
 
 def evaluate_one(qa: dict, use_semantic: bool = True) -> dict:
     """단일 QA 에 대해 retrieval.route_and_answer() 호출 후 메트릭 계산.
@@ -153,6 +172,7 @@ def evaluate_one(qa: dict, use_semantic: bool = True) -> dict:
 
     # ── 답변 생성 ──────────────────────────────────────────
     started = time.perf_counter()
+    result = None
     try:
         result = route_and_answer(question)
         prediction = result.answer or "[답변 불가]"
@@ -164,6 +184,7 @@ def evaluate_one(qa: dict, use_semantic: bool = True) -> dict:
         actual_route = None
         retrieval_error = f"{type(e).__name__}: {e}"
     elapsed = time.perf_counter() - started
+    retrieved_context = _extract_retrieved_context(result)
 
     # ── Tier 1 메트릭 ──────────────────────────────────────
     rouge   = compute_rouge(prediction, reference)
@@ -191,13 +212,23 @@ def evaluate_one(qa: dict, use_semantic: bool = True) -> dict:
     }
 
     # Tier 1 — Faithfulness Judge (FineSurE)
-    judge = judge_faithfulness(reference, prediction)
-    out.update({
-        "faithfulness":        judge.get("faithfulness", "Error"),
-        "faithfulness_reason": judge.get("faithfulness_reason", ""),
-        "completeness":        judge.get("completeness", None),
-        "conciseness":         judge.get("conciseness", None),
-    })
+    # E1: source = retrieved context (검색된 청크) — gold(reference) 아님.
+    # 컨텍스트 없으면(community stub / 빈 검색) 충실도 측정 불가 → N/A.
+    if retrieved_context:
+        judge = judge_faithfulness(retrieved_context, prediction)
+        out.update({
+            "faithfulness": judge.get("faithfulness", "Error"),
+            "faithfulness_reason": judge.get("faithfulness_reason", ""),
+            "completeness": judge.get("completeness", None),
+            "conciseness": judge.get("conciseness", None),
+        })
+    else:
+        out.update({
+            "faithfulness": "N/A",
+            "faithfulness_reason": "retrieved context 없음(stub/빈 검색) — 충실도 측정 불가",
+            "completeness": None,
+            "conciseness": None,
+        })
     num_judge = judge_numerical_faithfulness(reference, prediction)
     out["numerical_faithfulness"]        = num_judge.get("numerical_faithfulness", "Error")
     out["numerical_faithfulness_reason"] = num_judge.get("reason", "")
@@ -272,8 +303,10 @@ def print_summary(results: list[dict]) -> None:
         return sum(vals) / len(vals) if vals else 0.0
 
     def _faithful_rate(rs: list[dict]) -> tuple[int, int]:
-        f = sum(1 for r in rs if r.get("faithfulness") == "Faithful")
-        return f, len(rs)
+        # E1: N/A(컨텍스트 없음)·Error 는 분모 제외 — 측정 가능한 것만
+        considered = [r for r in rs if r.get("faithfulness") in ("Faithful", "Not Faithful")]
+        f = sum(1 for r in considered if r.get("faithfulness") == "Faithful")
+        return f, len(considered)
 
     def _routing_rate(rs: list[dict]) -> tuple[int, int]:
         considered = [r for r in rs if r.get("routing_correct") is not None]
