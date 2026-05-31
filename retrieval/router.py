@@ -92,12 +92,13 @@ from retrieval.local_retriever import LocalRetrieverResult, local_retrieve
 from retrieval.text2cypher import Text2CypherResult, text2cypher
 from retrieval.bm25_retriever import BM25RetrieverResult, bm25_retrieve
 from retrieval.ppr_retriever import PPRRetrieverResult, ppr_retrieve
+from retrieval.hybrid_retriever import HybridRetrieverResult, hybrid_retrieve
 
 logger = logging.getLogger(__name__)
 
 
 # ── 타입 ─────────────────────────────────────────────────────
-Route = Literal["t2c", "local", "community", "bm25", "ppr"]
+Route = Literal["t2c", "local", "community", "bm25", "ppr", "hybrid"]
 
 
 # ── 키워드 매핑 (5/17 결정) ──────────────────────────────────
@@ -140,7 +141,7 @@ COMMUNITY_KEYWORDS: tuple[str, ...] = (
 #          직접 끌어옴. 관계/인과는 키워드 라우터가 local로 잡으므로 default는 bm25.
 DEFAULT_ROUTE: Route = "bm25"
 # 실험 토글 (A): "local" 결정을 어느 graph retriever 로 — PPR vs 1-hop local 비교용.
-GRAPH_RETRIEVER: Literal["local", "ppr"] = "local"
+GRAPH_RETRIEVER: Literal["local", "ppr", "hybrid"] = "local"
 
 # 프롬프트 경로 — 5/25 v2: router_v1.md → router_v2.md, 5/30 v3: → router_v3.md (bm25 추가)
 PROMPTS_DIR = Path(__file__).parent / "prompts"
@@ -182,6 +183,7 @@ class RoutedResult:
     community_result: CommunitySummaryResult | None = None
     bm25_result: BM25RetrieverResult | None = None
     ppr_result: PPRRetrieverResult | None = None
+    hybrid_result: HybridRetrieverResult | None = None
     elapsed_seconds: float = 0.0
 
 
@@ -433,6 +435,14 @@ def route_and_answer(
                 return RoutedResult(
                     question=question, decision=decision, answer=ppr_res.answer,
                     ppr_result=ppr_res, elapsed_seconds=elapsed,
+                )
+            if GRAPH_RETRIEVER == "hybrid":
+                hybrid_res = hybrid_retrieve(question, llm=llm, neo4j=neo4j)
+                decision.route = "hybrid"  # 실제 실행된 retriever 반영 (측정/진단용)
+                elapsed = time.perf_counter() - started
+                return RoutedResult(
+                    question=question, decision=decision, answer=hybrid_res.answer,
+                    hybrid_result=hybrid_res, elapsed_seconds=elapsed,
                 )
             local_res = local_retrieve(question, llm=llm, neo4j=neo4j)
             answer = local_res.answer
