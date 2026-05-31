@@ -187,8 +187,6 @@ def evaluate_one(qa: dict, use_semantic: bool = True) -> dict:
     retrieved_context = _extract_retrieved_context(result)
 
     # ── Tier 1 메트릭 ──────────────────────────────────────
-
-    # ── Tier 1 메트릭 ──────────────────────────────────────
     rouge   = compute_rouge(prediction, reference)
     num_acc = compute_numerical_accuracy(prediction, reference)
 

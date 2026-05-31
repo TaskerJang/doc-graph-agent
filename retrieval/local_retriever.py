@@ -106,7 +106,7 @@ class LocalRetrieverResult:
     matched_entities: list[dict[str, Any]] = field(default_factory=list)     # Neo4j 매칭
     subgraph_nodes: int = 0       # 이웃 노드 수 (중복 제거 후)
     subgraph_relations: int = 0   # 관계 edges 수
-    subgraph_chunks: int = 0      # 인용된 청크 수subgraph_chunks: int = 0      # 인용된 청크 수
+    subgraph_chunks: int = 0      # 인용된 청크 수
     retrieved_context: str = ""   # E1: faithfulness judge 대조용 (_format_context 직렬화)
     answer: str = ""
     elapsed_seconds: float = 0.0
