@@ -152,6 +152,8 @@ def _extract_retrieved_context(result) -> str:
         return (result.local_result.retrieved_context or "").strip()
     if result.ppr_result is not None:
         return (result.ppr_result.retrieved_context or "").strip()
+    if result.hybrid_result is not None:
+        return (result.hybrid_result.retrieved_context or "").strip()
     if result.t2c_result is not None:
         return json.dumps(
             {"cypher": result.t2c_result.cypher, "rows": result.t2c_result.result},
