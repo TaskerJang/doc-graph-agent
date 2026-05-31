@@ -13,7 +13,7 @@ retriever. 쿼리 엔티티를 seed 로 두고 엔티티 그래프 위에서 Per
   하나도 없는 청크라도 엔티티 체인으로 강하게 연결돼 있으면 도달 — multi-hop 의 본질.
 
 왜 networkx 인가 (GDS 아님):
-- 본 그래프는 ~610 노드 / ~2,451 관계로 작다. networkx PPR 은 수 ms.
+- 본 그래프는 ~1,100 노드 / ~9,474 엣지로 작다. networkx PPR 은 수 ms.
 - 표준 Neo4j GDS 는 Enterprise 전용. DozerDB 의 OpenGDS 는 버전 매칭이 까다롭다
   (ClassNotFoundException: MetricsManager 등). 이 규모에선 인프라 의존 0 인
   networkx 가 더 빠르고 투명. GDS 는 그래프가 수만 노드로 커질 때.
@@ -25,23 +25,31 @@ retriever. 쿼리 엔티티를 seed 로 두고 엔티티 그래프 위에서 Per
      ↓ _load_entity_graph (Neo4j → networkx, 캐시) — 엔티티-엔티티(Layer B + co-mention)
   엔티티 그래프 (가중 무방향)
      ↓ _run_ppr (seed 에 personalization 집중)
-  엔티티별 PPR 점수
-     ↓ _rank_chunks (상위 엔티티의 MENTIONS 청크를 PPR 합으로 점수)
+  엔티티별 raw PPR 점수
+     ↓ node specificity 재랭킹 (v2): eff = pr · spec, spec=log(1+N/df)  [NODE_SPECIFICITY]
+  엔티티별 effective 점수
+     ↓ _rank_chunks (상위 엔티티의 MENTIONS 청크를 eff 합으로 점수)
   top-k 청크
      ↓ _generate_answer (LLM)
   자연어 답변
+
+node specificity (v2, 5/31):
+- v1 측정에서 PPR 상위가 metric 노이즈("매출액 2조…", "영업이익 1,606억…")로 도배 →
+  곁가지 청크가 섞여 faithfulness 하락(graph_012 류). 이런 노드는 *많은 청크에 등장* =
+  degree 높음 = PageRank 높음.
+- 처방: 엔티티 e 의 specificity spec(e) = log(1 + N/df(e)) (df = e 를 언급한 청크 수,
+  N = 전체 청크 수, IDF 계열). 흔할수록 df↑ → spec↓. PPR 은 그대로 두고(활성화 확산
+  보존) **re-ranking 층**으로만 곱한다: eff(e) = pr(e) · spec(e). top 엔티티 선정과
+  청크 점수 합산 모두 eff 사용 → generic hub 가 끌어온 곁가지 청크가 밀려난다.
+- HippoRAG 의 node specificity(쿼리 phrase 의 IDF 가중)를 readout 측에 적용한 변형.
 
 안전장치:
 1. read-only — 모든 Cypher 는 조회 전용 + parameterized.
 2. 결과 크기 제한 — TOP_ENTITIES / TOP_K_CHUNKS / CHUNK_TEXT_TRUNCATE.
 3. graceful fallback — seed 0개 / 빈 그래프 / LLM 실패 모두 자연어 안내.
 
-v1 범위 (지금):
-- 엔티티 그래프 PPR + 청크 readout. HippoRAG 1편 본질.
-
-v2 (나중, 측정 보고):
+v3 (나중):
 - dual-node (passage+phrase 노드를 PPR 그래프에 직접 포함, HippoRAG 2).
-- node specificity (IDF 유사 — 희소 엔티티 seed 가중).
 - dense seed (임베딩 유사 청크도 seed 에 추가 — dense+sparse 통합).
 
 #24 Opik:
@@ -49,8 +57,8 @@ v2 (나중, 측정 보고):
 
 Reference:
 - retrieval/local_retriever.py — entity 식별/매칭 front-end 재사용.
-- HippoRAG (NeurIPS'24, arXiv 2405.14831) — KG + Personalized PageRank 멀티홉.
-- HippoRAG 2 (2025) — dual-node + dense/sparse 통합 (v2 참고).
+- HippoRAG (NeurIPS'24, arXiv 2405.14831) — KG + Personalized PageRank + node specificity.
+- HippoRAG 2 (2025) — dual-node + dense/sparse 통합 (v3 참고).
 - Cormack et al. 2009 (RRF) — 추후 bm25 ⊕ ppr 융합 시 (Plan B).
 """
 
@@ -58,6 +66,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -96,6 +105,9 @@ TOP_K_CHUNKS = 8             # 최종 답변에 넘길 청크 수 (bm25 와 동�
 CHUNK_TEXT_TRUNCATE = 600    # 청크 1개당 char 상한
 MAX_CHUNK_ROWS = 5000        # entity→chunk 풀 안전 상한
 
+# v2 토글: node specificity 재랭킹 (eff = pr · spec). False 면 v1(raw PPR).
+NODE_SPECIFICITY: bool = True
+
 # Layer B 관계 (local 과 일치)
 LAYER_B_RELS = ("FACES_RISK", "HAS_METRIC", "HAS_OUTLOOK", "RECOMMENDED_FOR")
 
@@ -118,7 +130,7 @@ class PPRRetrieverResult:
     seed_names: list[str] = field(default_factory=list)
     n_graph_nodes: int = 0
     n_graph_edges: int = 0
-    top_entities: list[dict[str, Any]] = field(default_factory=list)  # [{name, score}]
+    top_entities: list[dict[str, Any]] = field(default_factory=list)  # [{name, score, ppr, spec}]
     retrieved_chunks: list[dict[str, Any]] = field(default_factory=list)
     n_chunks: int = 0
     retrieved_context: str = ""   # E1: faithfulness judge 대조용 (청크 text join)
@@ -184,8 +196,26 @@ def _build_entity_graph(
     return G
 
 
+def _compute_specificity(chunk_rows: list[dict[str, Any]]) -> dict[str, float]:
+    """엔티티별 node specificity = log(1 + N/df).
+
+    df(e) = e 를 언급한 distinct 청크 수, N = 전체 distinct 청크 수.
+    흔할수록(df↑) 값이 작아져 readout 에서 down-weight 된다 (IDF 계열).
+    """
+    df: dict[str, set[str]] = {}
+    chunks: set[str] = set()
+    for row in chunk_rows:
+        eid, cid = row.get("eid"), row.get("chunk_id")
+        if not eid or not cid:
+            continue
+        df.setdefault(eid, set()).add(cid)
+        chunks.add(cid)
+    n = max(len(chunks), 1)
+    return {eid: math.log(1 + n / len(cids)) for eid, cids in df.items()}
+
+
 def _run_ppr(G: nx.Graph, seed_ids: list[str]) -> dict[str, float]:
-    """seed 노드에 personalization 집중한 Personalized PageRank."""
+    """seed 노드에 personalization 집중한 Personalized PageRank (raw)."""
     seeds = [s for s in seed_ids if s in G]
     if G.number_of_nodes() == 0 or not seeds:
         return {}
@@ -201,19 +231,29 @@ def _run_ppr(G: nx.Graph, seed_ids: list[str]) -> dict[str, float]:
         return nx.pagerank(G, alpha=PPR_ALPHA, weight="weight")
 
 
+def _effective_scores(
+    pr: dict[str, float], spec: dict[str, float], use_specificity: bool
+) -> dict[str, float]:
+    """raw PPR 에 node specificity 를 곱한 effective 점수 (v2). off 면 raw 그대로."""
+    if not use_specificity:
+        return dict(pr)
+    return {e: s * spec.get(e, 1.0) for e, s in pr.items()}
+
+
 def _rank_chunks(
-    pr: dict[str, float],
+    scores: dict[str, float],
     chunk_rows: list[dict[str, Any]],
     top_entities: int = TOP_ENTITIES,
     top_k_chunks: int = TOP_K_CHUNKS,
 ) -> list[dict[str, Any]]:
-    """상위 활성 엔티티의 청크를 'PPR 합'으로 점수매겨 top-k.
+    """상위 활성 엔티티의 청크를 'effective 점수 합'으로 점수매겨 top-k.
 
-    chunk score = 그 청크를 언급한 (상위) 엔티티들의 PPR 점수 합.
+    chunk score = 그 청크를 언급한 (상위) 엔티티들의 effective 점수 합.
+    scores 는 raw PPR(v1) 또는 pr·spec(v2) 중 하나.
     """
-    if not pr:
+    if not scores:
         return []
-    ranked_ents = sorted(pr.items(), key=lambda kv: kv[1], reverse=True)[:top_entities]
+    ranked_ents = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)[:top_entities]
     top_set = {eid for eid, _ in ranked_ents}
 
     chunk_score: dict[str, float] = {}
@@ -226,7 +266,7 @@ def _rank_chunks(
         text = row.get("text")
         if not cid or not text:
             continue
-        chunk_score[cid] = chunk_score.get(cid, 0.0) + pr.get(eid, 0.0)
+        chunk_score[cid] = chunk_score.get(cid, 0.0) + scores.get(eid, 0.0)
         if cid not in chunk_meta:
             chunk_meta[cid] = {"chunk_id": cid, "text": text, "page": row.get("page")}
 
@@ -234,7 +274,7 @@ def _rank_chunks(
     out: list[dict[str, Any]] = []
     for cid, score in ranked:
         m = dict(chunk_meta[cid])
-        m["ppr_score"] = round(score, 5)
+        m["score"] = round(score, 5)
         out.append(m)
     return out
 
@@ -242,14 +282,14 @@ def _rank_chunks(
 # ── 그래프 로드 (Neo4j → networkx, 캐시) ────────────────────
 def _load_entity_graph(
     neo4j: Neo4jClient, rebuild: bool = False
-) -> tuple[nx.Graph, list[dict[str, Any]]]:
-    """엔티티 그래프 + entity→chunk rows 를 Neo4j 에서 1회 빌드 후 캐시.
+) -> tuple[nx.Graph, list[dict[str, Any]], dict[str, float]]:
+    """엔티티 그래프 + entity→chunk rows + specificity 를 Neo4j 에서 1회 빌드 후 캐시.
 
     Returns:
-        (G, chunk_rows). 실패 시 (빈 그래프, []).
+        (G, chunk_rows, spec). 실패 시 (빈 그래프, [], {}).
     """
     if not rebuild and "graph" in _GRAPH_CACHE:
-        return _GRAPH_CACHE["graph"], _GRAPH_CACHE["chunk_rows"]
+        return _GRAPH_CACHE["graph"], _GRAPH_CACHE["chunk_rows"], _GRAPH_CACHE["spec"]
 
     try:
         entity_rows = neo4j.read(_ENTITIES_CYPHER)
@@ -260,16 +300,18 @@ def _load_entity_graph(
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("엔티티 그래프 로드 실패: %s", exc)
-        return nx.Graph(), []
+        return nx.Graph(), [], {}
 
     G = _build_entity_graph(entity_rows, rel_rows, comention_rows)
+    spec = _compute_specificity(chunk_rows)
     _GRAPH_CACHE["graph"] = G
     _GRAPH_CACHE["chunk_rows"] = chunk_rows
+    _GRAPH_CACHE["spec"] = spec
     logger.info(
-        "엔티티 그래프 빌드 — %d 노드 / %d 엣지 / chunk_rows=%d",
-        G.number_of_nodes(), G.number_of_edges(), len(chunk_rows),
+        "엔티티 그래프 빌드 — %d 노드 / %d 엣지 / chunk_rows=%d / spec=%d",
+        G.number_of_nodes(), G.number_of_edges(), len(chunk_rows), len(spec),
     )
-    return G, chunk_rows
+    return G, chunk_rows, spec
 
 
 # ── 답변 생성 ────────────────────────────────────────────────
@@ -324,7 +366,7 @@ def ppr_retrieve(
     neo4j: Neo4jClient | None = None,
     rebuild_graph: bool = False,
 ) -> PPRRetrieverResult:
-    """자연어 질문 → seed 엔티티 → PPR → 상위 엔티티 청크 → 자연어 답변.
+    """자연어 질문 → seed 엔티티 → PPR → (specificity 재랭킹) → 청크 → 자연어 답변.
 
     Args:
         question: 사용자 자연어 질문.
@@ -349,7 +391,7 @@ def ppr_retrieve(
 
     entity_system_prompt = _load_prompt(ENTITY_PROMPT_PATH)
     answer_system_prompt = _load_prompt(ANSWER_PROMPT_PATH)
-    logger.info("PPRRetriever 시작 — question=%r", question)
+    logger.info("PPRRetriever 시작 — question=%r (specificity=%s)", question, NODE_SPECIFICITY)
 
     try:
         # 1) seed 엔티티 식별 + 매칭 (local front-end 재사용)
@@ -360,8 +402,8 @@ def ppr_retrieve(
         seed_ids = list({m["id"] for m in matched})
         seed_names = [m["name"] for m in matched]
 
-        # 2) 엔티티 그래프 (캐시)
-        G, chunk_rows = _load_entity_graph(neo4j, rebuild=rebuild_graph)
+        # 2) 엔티티 그래프 + specificity (캐시)
+        G, chunk_rows, spec = _load_entity_graph(neo4j, rebuild=rebuild_graph)
 
         if not seed_ids or G.number_of_nodes() == 0:
             note = (
@@ -385,16 +427,22 @@ def ppr_retrieve(
                 error=note,
             )
 
-        # 3) Personalized PageRank
+        # 3) Personalized PageRank (raw) → node specificity 재랭킹 (v2)
         pr = _run_ppr(G, seed_ids)
+        eff = _effective_scores(pr, spec, NODE_SPECIFICITY)
 
-        # 4) 상위 엔티티 + 청크 readout
-        ranked_ents = sorted(pr.items(), key=lambda kv: kv[1], reverse=True)[:TOP_ENTITIES]
+        # 4) 상위 엔티티 + 청크 readout (eff 기준)
+        ranked_ents = sorted(eff.items(), key=lambda kv: kv[1], reverse=True)[:TOP_ENTITIES]
         top_entities = [
-            {"name": G.nodes[eid].get("name", ""), "score": round(s, 5)}
+            {
+                "name": G.nodes[eid].get("name", ""),
+                "score": round(s, 5),
+                "ppr": round(pr.get(eid, 0.0), 5),
+                "spec": round(spec.get(eid, 1.0), 3),
+            }
             for eid, s in ranked_ents
         ]
-        chunks = _rank_chunks(pr, chunk_rows)
+        chunks = _rank_chunks(eff, chunk_rows)
         context = "\n\n".join((c.get("text") or "") for c in chunks).strip()
 
         # 5) 답변 생성
@@ -404,9 +452,9 @@ def ppr_retrieve(
 
         elapsed = time.perf_counter() - started
         logger.info(
-            "PPRRetriever 완료 — seeds=%d nodes=%d edges=%d chunks=%d elapsed=%.2fs",
+            "PPRRetriever 완료 — seeds=%d nodes=%d edges=%d chunks=%d spec=%s elapsed=%.2fs",
             len(seed_ids), G.number_of_nodes(), G.number_of_edges(),
-            len(chunks), elapsed,
+            len(chunks), NODE_SPECIFICITY, elapsed,
         )
         return PPRRetrieverResult(
             question=question,
