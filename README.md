@@ -1,8 +1,19 @@
 # doc-graph-agent
 
-[![Python](https://img.shields.io/badge/Python-3.11+-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
-[![Neo4j](https://img.shields.io/badge/Neo4j-DozerDB-008CC1?style=flat-square&logo=neo4j&logoColor=white)](https://neo4j.com/)
-[![License](https://img.shields.io/badge/eval-80%20QA-6c63ff?style=flat-square)](#evaluation-setup)
+![Python](https://img.shields.io/badge/Python-3.11+-3776AB?style=flat-square&logo=python&logoColor=white)
+![uv](https://img.shields.io/badge/uv-package%20manager-DE5FE9?style=flat-square&logo=astral&logoColor=white)
+![Neo4j](https://img.shields.io/badge/Neo4j-DozerDB-008CC1?style=flat-square&logo=neo4j&logoColor=white)
+![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?style=flat-square&logo=docker&logoColor=white)
+
+![OpenAI](https://img.shields.io/badge/GPT--5.2-OpenRouter-412991?style=flat-square&logo=openai&logoColor=white)
+![BGE-M3](https://img.shields.io/badge/BGE--M3-embeddings-FFD21E?style=flat-square&logo=huggingface&logoColor=black)
+![Pydantic](https://img.shields.io/badge/Pydantic-schema-E92063?style=flat-square&logo=pydantic&logoColor=white)
+![networkx](https://img.shields.io/badge/networkx-PPR-2C5BB4?style=flat-square)
+![BM25](https://img.shields.io/badge/rank__bm25-RRF%20k%3D60-6c63ff?style=flat-square)
+
+![Opik](https://img.shields.io/badge/Opik-tracing-00d4aa?style=flat-square)
+![Pytest](https://img.shields.io/badge/Pytest-tests-0A9EDC?style=flat-square&logo=pytest&logoColor=white)
+![Ruff](https://img.shields.io/badge/Ruff-lint-D7FF64?style=flat-square&logo=ruff&logoColor=black)
 
 A Layer A/B/C **GraphRAG** system built over 8 Korean financial documents, measured against a VectorRAG baseline with 80 QA pairs to find where a knowledge graph actually helps.
 
@@ -196,25 +207,6 @@ doc-graph-agent/
 ├── AGENTS.md                   # Codex / Cursor context
 └── CLAUDE.md                   # Claude Code context
 ```
-
----
-
-## Tech stack
-
-![Python](https://img.shields.io/badge/Python-3.11+-3776AB?style=flat-square&logo=python&logoColor=white)
-![uv](https://img.shields.io/badge/uv-package%20manager-DE5FE9?style=flat-square&logo=astral&logoColor=white)
-![Neo4j](https://img.shields.io/badge/Neo4j-DozerDB-008CC1?style=flat-square&logo=neo4j&logoColor=white)
-![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?style=flat-square&logo=docker&logoColor=white)
-
-![OpenAI](https://img.shields.io/badge/GPT--5.2-OpenRouter-412991?style=flat-square&logo=openai&logoColor=white)
-![BGE-M3](https://img.shields.io/badge/BGE--M3-embeddings-FFD21E?style=flat-square&logo=huggingface&logoColor=black)
-![Pydantic](https://img.shields.io/badge/Pydantic-schema-E92063?style=flat-square&logo=pydantic&logoColor=white)
-![networkx](https://img.shields.io/badge/networkx-PPR-2C5BB4?style=flat-square)
-![BM25](https://img.shields.io/badge/rank__bm25-RRF%20k%3D60-6c63ff?style=flat-square)
-
-![Opik](https://img.shields.io/badge/Opik-tracing-00d4aa?style=flat-square)
-![Pytest](https://img.shields.io/badge/Pytest-tests-0A9EDC?style=flat-square&logo=pytest&logoColor=white)
-![Ruff](https://img.shields.io/badge/Ruff-lint-D7FF64?style=flat-square&logo=ruff&logoColor=black)
 
 ---
 
