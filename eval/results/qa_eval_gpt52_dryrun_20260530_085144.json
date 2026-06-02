@@ -1,0 +1,123 @@
+[
+  {
+    "id": "hanwha_001",
+    "qa_set": "vectorrag",
+    "doc": "한화투자증권_두산밥칿_기업분석_리포트.pdf",
+    "type": "factual",
+    "pattern": "",
+    "question": "두산밥칿의 목표주가는 얼마인가?",
+    "reference": "80,000원",
+    "prediction": "질문에서 ‘두산밥칿’과 ‘목표주가’를 entity로 식별했지만, 현재 그래프에는 해당 entity가 적재되어 있지 않아 두산밥캣의 목표주가를 조회할 수 없습니다(fallback_reason: “질문에서 추출한 entity 후보 (['두산밥칿', '목표주가']) 가 그래프에 적재되지 않았습니다.”).  \n회사명이 오타(‘두산밥칿’ → ‘두산밥캣’)일 가능성이 커서, ‘두산밥캣’으로 다시 한 번 질의해 보세요.  \n또는 그래프에 적재된 다른 회사명(보고서에 실제로 포함된 종목)으로 질문하시거나, 두산밥캣 리포트/문서를 추가 적재하면 목표주가 같은 지표(HAS_METRIC/RECOMMENDED_FOR 등)로 연결해 답변할 수 있습니다.",
+    "actual_route": "local",
+    "retrieval_error": null,
+    "elapsed_seconds": 10.32,
+    "rouge1": 0.0113,
+    "rouge2": 0.0,
+    "rougeL": 0.0113,
+    "num_accuracy": 0.0,
+    "num_matched": [],
+    "num_missed": [
+      "80000원"
+    ],
+    "faithfulness": "Not Faithful",
+    "faithfulness_reason": "원문은 '80,000원'이라는 단순한 숫자만 포함하고 있으나, 요약은 원문에 없는 '두산밥캣', '목표주가', 'entity', 'fallback_reason', '오타' 등의 내용을 포함하고 있음",
+    "completeness": 1,
+    "conciseness": 1,
+    "numerical_faithfulness": "Correct",
+    "numerical_faithfulness_reason": "모든 수치 일치",
+    "answer_correctness": 1,
+    "answer_correctness_reason": "정답은 '80,000원'이지만, 예측 답변은 데이터 부재로 인해 답변을 제공하지 않았으므로 핵심 정보가 완전히 누락되었음. 엔티티 매칭 실패에 대한 설명만 제공하여 정답과 의미적으로 일치하지 않음.",
+    "semantic_similarity": 0.3531,
+    "entity_coverage": 0.0,
+    "entity_matched": [],
+    "entity_missed": [
+      "80000원"
+    ],
+    "entity_total": 1,
+    "routing_correct": null,
+    "expected_route": null
+  },
+  {
+    "id": "hanwha_002",
+    "qa_set": "vectorrag",
+    "doc": "한화투자증권_두산밥칿_기업분석_리포트.pdf",
+    "type": "numerical",
+    "pattern": "",
+    "question": "두산밥칿의 2026년 1분기 예상 영업이익과 OPM은?",
+    "reference": "1,606억원(-19.7%, OPM 7.4%)",
+    "prediction": "질문에서 ‘두산밥칿(두산밥캣으로 추정)’, ‘2026년 1분기’, ‘예상 영업이익’, ‘OPM’을 식별했지만, 현재 그래프에는 해당 entity 들이 적재되어 있지 않아 2026년 1분기 예상 영업이익과 OPM 값을 조회할 수 없습니다(매칭 실패 사유: “질문에서 추출한 entity 후보 …가 그래프에 적재되지 않았습니다.”).  \n회사명 오타 가능성이 있어 ‘두산밥캣’으로 다시 질의해 보시거나, 그래프에 두산밥캣 관련 리포트/재무전망 문서를 추가 적재한 뒤 다시 조회해 주세요.  \n가능하면 “두산밥캣 2026년 1Q 영업이익, OPM 전망”처럼 표기(1Q/1분기)도 함께 바꿔 주시면 매칭 확률이 올라갑니다.",
+    "actual_route": "local",
+    "retrieval_error": null,
+    "elapsed_seconds": 9.36,
+    "rouge1": 0.0659,
+    "rouge2": 0.0,
+    "rougeL": 0.0659,
+    "num_accuracy": 0.0,
+    "num_matched": [],
+    "num_missed": [
+      "1606억원",
+      "-19.7%",
+      "7.4%"
+    ],
+    "faithfulness": "Not Faithful",
+    "faithfulness_reason": "요약에서 원문에 없는 '질문', '그래프', 'entity 매칭', '두산밥캣 리포트' 등의 내용을 추가로 포함했음",
+    "completeness": 1,
+    "conciseness": 1,
+    "numerical_faithfulness": "Correct",
+    "numerical_faithfulness_reason": "모든 수치 일치",
+    "answer_correctness": 1,
+    "answer_correctness_reason": "예측 답변은 실제 수치(1,606억원, -19.7%, OPM 7.4%)를 제공하지 않고 데이터 미적재로 인한 답변 불가 상태를 반환했으므로, 정답의 모든 핵심 사실이 누락되었습니다.",
+    "semantic_similarity": 0.4966,
+    "entity_coverage": 0.0,
+    "entity_matched": [],
+    "entity_missed": [
+      "1606억원",
+      "-19.7%",
+      "억원",
+      "7.4%"
+    ],
+    "entity_total": 4,
+    "routing_correct": null,
+    "expected_route": null
+  },
+  {
+    "id": "hanwha_003",
+    "qa_set": "vectorrag",
+    "doc": "한화투자증권_두산밥칿_기업분석_리포트.pdf",
+    "type": "numerical",
+    "pattern": "",
+    "question": "북미 딜러 재고는 몇 개월 수준까지 내려왔는가?",
+    "reference": "3.0~3.5개월",
+    "prediction": "질문에서 ‘북미 딜러 재고’를 핵심 지표(entity)로 식별했지만, 현재 그래프에 해당 항목이 entity로 적재되어 있지 않아 “몇 개월 수준까지 내려왔는지” 값을 subgraph 근거로 바로 답변할 수 없습니다(매칭 실패 사유: 질문에서 추출한 entity 후보 (['북미 딜러 재고']) 가 그래프에 적재되지 않았습니다).  \n대신 그래프에 실제로 들어있는 회사/리포트 단위로 다시 조회하면, 그 문서에서 “딜러 재고(개월)” 수치가 언급된 청크를 찾아 답을 낼 수 있습니다.  \n가능하면 질문을 “(회사명) 리포트에서 북미 딜러 재고가 몇 개월까지 하락했나?”처럼 회사명(예: 두산밥캣 등)이나 문서 범위를 함께 주시거나, 동일 의미의 표현(‘딜러 재고 월수’, ‘재고 개월수’, ‘dealer inventory months’)로도 다시 시도해 주세요.",
+    "actual_route": "local",
+    "retrieval_error": null,
+    "elapsed_seconds": 9.19,
+    "rouge1": 0.0296,
+    "rouge2": 0.0,
+    "rougeL": 0.0296,
+    "num_accuracy": 0.0,
+    "num_matched": [],
+    "num_missed": [
+      "3.0~3.5개월"
+    ],
+    "faithfulness": "Not Faithful",
+    "faithfulness_reason": "요약이 원문에 없는 내용(entity 매칭 실패, 시스템 한계, 대체 질문 방법 등)을 포함하고 있음",
+    "completeness": 1,
+    "conciseness": 1,
+    "numerical_faithfulness": "Correct",
+    "numerical_faithfulness_reason": "모든 수치 일치 - 원문의 '3.0~3.5개월'이 요약에서 '몇 개월 수준까지 내려왔는지'라는 일반적 표현으로 언급되고 있으며, 구체적인 수치 불일치 없음",
+    "answer_correctness": 1,
+    "answer_correctness_reason": "예측 답변이 실제 수치(3.0~3.5개월)를 제공하지 않고 시스템의 기술적 한계를 설명하는 에러 메시지만 반환했으므로, 정답의 핵심 팩트가 완전히 누락되었습니다.",
+    "semantic_similarity": 0.386,
+    "entity_coverage": 0.5,
+    "entity_matched": [
+      "개월"
+    ],
+    "entity_missed": [
+      "3.0~3.5개월"
+    ],
+    "entity_total": 2,
+    "routing_correct": null,
+    "expected_route": null
+  }
+]

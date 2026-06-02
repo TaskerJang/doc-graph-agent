@@ -95,7 +95,7 @@ The biggest lesson from the loop: reading one metric in isolation leads to the w
 
 ## Architecture
 
-<img width="810" height="700" alt="architecture" src="https://github.com/user-attachments/assets/ad381a34-2d56-4c74-83b0-cb402fab1474" />
+![architecture.png](image/architecture.png)
 
 | Layer | Responsibility | Query type | Retrieval strategy |
 |---|---|---|---|

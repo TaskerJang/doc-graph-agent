@@ -141,7 +141,7 @@ COMMUNITY_KEYWORDS: tuple[str, ...] = (
 #          직접 끌어옴. 관계/인과는 키워드 라우터가 local로 잡으므로 default는 bm25.
 DEFAULT_ROUTE: Route = "bm25"
 # 실험 토글 (A): "local" 결정을 어느 graph retriever 로 — PPR vs 1-hop local 비교용.
-GRAPH_RETRIEVER: Literal["local", "ppr", "hybrid"] = "local"
+GRAPH_RETRIEVER: Literal["local", "ppr", "hybrid"] = "hybrid"
 
 # 프롬프트 경로 — 5/25 v2: router_v1.md → router_v2.md, 5/30 v3: → router_v3.md (bm25 추가)
 PROMPTS_DIR = Path(__file__).parent / "prompts"
