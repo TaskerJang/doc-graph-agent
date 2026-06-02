@@ -71,3 +71,10 @@ tmp/
 
 # 발표 자료 raw
 docs/showcase/raw/
+
+# 평가 결과 (생성물 전체)
+eval/results/
+
+# 루트 참고 노트 (레포 불필요)
+10_langgraph_patterns.md
+11_anthropic_agent_patterns.md
